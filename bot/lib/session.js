@@ -40,22 +40,52 @@ class Session {
    * Stelt ook activeTownId in vanuit de toid-cookie.
    */
   async validate() {
-    const url = `${this.baseUrl}/game/${this.world}`;
+    // Gebruik farm_town_overviews als lichtgewicht sessiecheck
+    // (kleiner dan volledige gamepagina, geeft redirect bij verlopen sessie)
+    const url = `${this.baseUrl}/game/farm_town_overviews?town_id=${this.activeTownId || 0}&action=index&nl_init=true&h=`;
     const res  = await this._fetch(url, { method: "GET", headers: this._headers() });
-    const html = await res.text();
+    const text = await res.text();
 
     const cookieCount = this._cookieCount();
-    // Debug: toon eerste 300 chars van response zodat we zien wat we terugkrijgen
-    if (html.length < 200000) {
-      console.warn(`[session] Ongeldig — html=${html.length}b cookies=${cookieCount}`);
-      console.warn(`[session] URL: ${url}`);
-      console.warn(`[session] Response snippet: ${html.slice(0, 300).replace(/\s+/g, " ")}`);
+
+    if (this._isExpired(text)) {
+      console.warn(`[session] Ongeldig (nosession/redirect) — cookies=${cookieCount}`);
       return false;
     }
+
     if (cookieCount < 12) {
-      console.warn(`[session] Ongeldig — html=${html.length}b cookies=${cookieCount}`);
+      console.warn(`[session] Ongeldig — te weinig cookies (${cookieCount})`);
       return false;
     }
+
+    // Probeer CSRF te extraheren als nog niet bekend
+    if (!this.csrf) {
+      // CSRF zit enkel in de volledige gamepagina, niet in API-responses
+      // Doe een volledige paginaload enkel voor CSRF
+      const pageUrl = `${this.baseUrl}/game/${this.world}`;
+      const pageRes = await this._fetch(pageUrl, { method: "GET", headers: this._headers() });
+      const pageHtml = await pageRes.text();
+      if (pageHtml.length > 50000) {
+        this.csrf = this._extractCsrf(pageHtml);
+      }
+    }
+
+    // toid uit cookie
+    if (!this.activeTownId) {
+      this.activeTownId = this._extractToid();
+    }
+
+    if (!this.csrf) {
+      console.warn("[session] CSRF niet gevonden");
+      return false;
+    }
+    if (!this.activeTownId) {
+      console.warn("[session] toid niet gevonden");
+      return false;
+    }
+
+    console.log(`[session] ✓ csrf=${this.csrf.slice(0,8)}… toid=${this.activeTownId} cookies=${cookieCount}`);
+    return true;
 
     this.csrf = this._extractCsrf(html);
     if (!this.csrf) {
@@ -189,9 +219,13 @@ class Session {
   }
 
   _isExpired(text) {
-    if (text.length < 5_000 && text.trimStart().startsWith("<!")) return true;
+    if (text.length < 5000 && text.trimStart().startsWith("<!")) return true;
+    if (text.includes("nosession")) return true;
     try {
-      if (JSON.parse(text)?.error === "not_logged_in") return true;
+      const d = JSON.parse(text);
+      if (d?.error === "not_logged_in") return true;
+      if (d?.json?.redirect?.includes("nosession")) return true;
+      if (d?.json?.redirect?.includes("login")) return true;
     } catch { /* geen JSON */ }
     return false;
   }
