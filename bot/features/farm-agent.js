@@ -191,6 +191,11 @@ export async function runFarmAgent(ctx) {
     .filter(Boolean);
   const nextReadyTs = nextReadyAll.length ? Math.min(...nextReadyAll) : null;
 
+  // Bouw overview van alle steden voor het dashboard
+  // Gebruik updatedTowns waar beschikbaar, anders allTowns
+  const updatedMap = new Map(updatedTowns.map(t => [t.id, t]));
+  const overview = allTowns.map(t => updatedMap.get(t.id) ?? t);
+
   console.log(`[farm-agent] ✓ ${townIds.length} steden geclaimd | overflow: ${overflowTowns.length}`);
 
   return {
@@ -201,6 +206,7 @@ export async function runFarmAgent(ctx) {
       overflow_towns:  overflowTowns.length,
       next_ready_ts:   nextReadyTs,
       new_assignments: newAssignments,
+      overview,          // volledige stadslijst voor dashboard
     },
   };
 }
