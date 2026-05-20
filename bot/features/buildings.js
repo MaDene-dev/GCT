@@ -1,12 +1,9 @@
 /**
  * features/buildings.js — Gebouwen monitoring
  *
- * Gebruikt building_main?action=index per stad (town_overviews?action=building_overview
- * retourneert een poll-response, geen bruikbare data).
- *
- * building_main geeft per stad: buildings object met current_level + level (na wachtrij).
- * level > current_level = in wachtrij.
- * Alle gebouwnamen zijn Engelse keys.
+ * building_main?action=index retourneert HTML via data._html (na session-fix).
+ * De gebouwdata zit in: BuildingMain.buildings = { academy: {current_level, level}, ... }
+ * Speciale gebouwen: $.extend(BuildingMain.special_buildings_combined_group, {theater: {...}}, ...)
  */
 
 import { randomSleep } from "../lib/delay.js";
@@ -14,7 +11,6 @@ import { randomSleep } from "../lib/delay.js";
 export async function runBuildings(ctx) {
   const { session } = ctx;
 
-  // Haal alle eigen steden op via farm_town_overviews (hebben we al als activeTownId)
   const townsData = await session.gameGet(
     "farm_town_overviews",
     session.activeTownId,
@@ -41,52 +37,25 @@ export async function runBuildings(ctx) {
       { town_id: town.id, nl_init: true }
     );
 
-    // building_main retourneert JSON met buildings object
-    // Structuur: data.buildings = { academy: { level, current_level }, ... }
-    // OF data.data.buildings = { ... }
-    // building_main retourneert { html: "...", json: {}, ... }
-    // Na session._handleResponse is buildings in data._html (HTML) of data.buildings (JSON)
-    const buildings = data?.buildings ?? data?.data?.buildings ?? null;
-    const html      = data?._html ?? "";
+    // HTML is bewaard als _html door session._handleResponse
+    const html = data?._html ?? "";
 
-    if (!buildings && !html) {
-      console.log(`[buildings] ${town.name}: geen data (keys: ${Object.keys(data ?? {}).join(", ")})`);
+    if (!html) {
       await randomSleep(0.5, 1);
       continue;
     }
 
-    // Als buildings in JSON: direct gebruiken
-    // Als buildings in HTML: parsen via brace-counter
-    let buildingData = buildings;
-    if (!buildingData && html) {
-      const varIdx = html.indexOf("var building_data = ");
-      if (varIdx !== -1) {
-        const startIdx = html.indexOf("{", varIdx);
-        if (startIdx !== -1) {
-          let depth = 0, endIdx = startIdx;
-          for (let i = startIdx; i < html.length; i++) {
-            if (html[i] === "{") depth++;
-            else if (html[i] === "}") { depth--; if (depth === 0) { endIdx = i; break; } }
-          }
-          try {
-            buildingData = JSON.parse(html.slice(startIdx, endIdx + 1));
-          } catch (e) {
-            console.warn(`[buildings] ${town.name}: HTML parse fout:`, e.message);
-          }
-        }
-      }
-      if (!buildingData) {
-        // Toon stuk HTML zodat we de juiste variabele kunnen vinden
-        const snippet = html.slice(0, 300).replace(/\s+/g, " ");
-        console.log(`[buildings] ${town.name}: HTML snippet:`, snippet);
-        await randomSleep(0.5, 1);
-        continue;
-      }
-    }
+    // Reguliere gebouwen: BuildingMain.buildings = { academy: {current_level: 28, level: 30}, ... }
+    const regular = parseBuildingMainObj_(html, "BuildingMain.buildings");
 
-    for (const [building, info] of Object.entries(buildingData)) {
-      const currentLevel = info?.current_level ?? info?.level ?? 0;
-      const targetLevel  = info?.level ?? 0;
+    // Speciale gebouwen: $.extend(BuildingMain.special_buildings_combined_group, {theater: {...}}, ...)
+    const specials = parseSpecialBuildings_(html);
+
+    const all = { ...regular, ...specials };
+
+    for (const [building, info] of Object.entries(all)) {
+      const currentLevel = info?.current_level ?? 0;
+      const targetLevel  = info?.level ?? currentLevel;
       if (targetLevel > currentLevel) {
         queued.push({
           town_id:  town.id,
@@ -103,8 +72,49 @@ export async function runBuildings(ctx) {
 
   console.log(`[buildings] ${queued.length} gebouwen in wachtrij`);
   if (queued.length > 0) {
-    console.log("[buildings] Wachtrij:", queued.map(q => `${q.name}:${q.building}(${q.current}→${q.target})`).join(", "));
+    console.log("[buildings]", queued.map(q => `${q.name}:${q.building}(${q.current}→${q.target})`).join(", "));
   }
 
   return { summary: { in_queue: queued.length, queue: queued } };
+}
+
+/** Parse "BuildingMain.buildings = { ... }" uit HTML */
+function parseBuildingMainObj_(html, varName) {
+  const marker = `${varName} = `;
+  const idx    = html.indexOf(marker);
+  if (idx === -1) return {};
+  const start = html.indexOf("{", idx);
+  if (start === -1) return {};
+  let depth = 0, end = start;
+  for (let i = start; i < html.length; i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}") { depth--; if (depth === 0) { end = i; break; } }
+  }
+  try { return JSON.parse(html.slice(start, end + 1)); }
+  catch (e) { console.warn(`[buildings] Parse fout ${varName}:`, e.message); return {}; }
+}
+
+/** Parse speciale gebouwen uit $.extend(...) calls */
+function parseSpecialBuildings_(html) {
+  const result = {};
+  const marker = "BuildingMain.special_buildings_combined_group,";
+  let searchFrom = 0;
+  while (true) {
+    const idx = html.indexOf(marker, searchFrom);
+    if (idx === -1) break;
+    // Zoek het object-argument
+    const objStart = html.indexOf("{", idx);
+    if (objStart === -1) break;
+    let depth = 0, objEnd = objStart;
+    for (let i = objStart; i < html.length; i++) {
+      if (html[i] === "{") depth++;
+      else if (html[i] === "}") { depth--; if (depth === 0) { objEnd = i; break; } }
+    }
+    try {
+      const obj = JSON.parse(html.slice(objStart, objEnd + 1));
+      Object.assign(result, obj);
+    } catch { /* skip */ }
+    searchFrom = objEnd + 1;
+  }
+  return result;
 }
