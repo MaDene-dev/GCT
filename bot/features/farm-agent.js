@@ -47,19 +47,38 @@ export async function runFarmAgent(ctx) {
   // ── 2. Island assignment — één stad per eiland ─────────────────────────
 
   const assignments = config.farmAgent?.islandAssignments ?? {};
-  const islandMap   = new Map(); // "x_y" → [town, ...]
+
+  // Debug: toon alle steden + coördinaten
+  console.log(`[farm-agent] ${allTowns.length} steden geladen`);
+
+  const islandMap = new Map(); // "x_y" → [town, ...]
 
   for (const town of allTowns) {
-    const key = `${town.island_x}_${town.island_y}`;
+    // Normaliseer coördinaten naar integer (API geeft soms floats: 475.0)
+    const ix  = Math.round(Number(town.island_x));
+    const iy  = Math.round(Number(town.island_y));
+    const key = `${ix}_${iy}`;
+    // Sla genormaliseerde coords op zodat alle vergelijkingen consistent zijn
+    town._islandKey = key;
     if (!islandMap.has(key)) islandMap.set(key, []);
     islandMap.get(key).push(town);
   }
+
+  // Debug: toon eilanden met meerdere steden
+  for (const [key, towns] of islandMap) {
+    if (towns.length > 1) {
+      console.log(`[farm-agent] Eiland ${key} heeft ${towns.length} eigen steden: ${towns.map(t => t.name).join(", ")}`);
+    }
+  }
+  console.log(`[farm-agent] Bestaande assignments:`, JSON.stringify(assignments));
 
   const assignedTowns = []; // de steden die daadwerkelijk farmen
   const newAssignments = {}; // te rapporteren aan GAS voor auto-opslaan
 
   for (const [key, towns] of islandMap) {
     if (towns.length === 1) {
+      // Sla ook enkelvoudige eilanden op zodat ze nooit opnieuw als "nieuw" worden gelogd
+      if (!assignments[key]) newAssignments[key] = towns[0].id;
       assignedTowns.push(towns[0]);
     } else {
       // Meerdere steden op dit eiland
@@ -69,13 +88,14 @@ export async function runFarmAgent(ctx) {
         : null;
 
       if (assigned) {
+        console.log(`[farm-agent] Eiland ${key}: gebruikt ${assigned.name} (id:${assigned.id})`);
         assignedTowns.push(assigned);
       } else {
         // Geen assignment → laagste ID als default
         const defaultTown = towns.reduce((a, b) => a.id < b.id ? a : b);
         assignedTowns.push(defaultTown);
         newAssignments[key] = defaultTown.id;
-        console.log(`[farm-agent] Nieuw eiland ${key}: default → ${defaultTown.name} (id:${defaultTown.id})`);
+        console.log(`[farm-agent] Nieuw eiland ${key} (${towns.length} steden): default → ${defaultTown.name} (id:${defaultTown.id})`);
       }
     }
   }
