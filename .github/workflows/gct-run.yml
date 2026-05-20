@@ -1,0 +1,58 @@
+name: Grepolis Control Tower — Bot Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      scheduled_start:
+        description: "Unix ms — bot wacht tot dit moment"
+        required: true
+        type: string
+      features:
+        description: 'JSON array — bv. ["farmAgent","resourceBalancer","culture"]'
+        required: true
+        type: string
+      run_id:
+        description: "Unieke run-ID gegenereerd door GAS"
+        required: true
+        type: string
+      gas_callback_url:
+        description: "GAS webapp URL voor events + config ophalen"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  # secrets: write kan niet via GITHUB_TOKEN — gebruik GCT_SECRET_WRITER_TOKEN (PAT)
+
+jobs:
+  gct-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        # BOT_DIR is een GitHub Actions repository variable (Settings → Variables)
+        # Default: "bot" — pas aan als de bot-map ergens anders zit in de repo
+        working-directory: ${{ vars.BOT_DIR || 'bot' }}
+        run: npm ci
+
+      - name: Run GCT bot
+        working-directory: ${{ vars.BOT_DIR || 'bot' }}
+        env:
+          GREPO_ACCOUNT:              ${{ secrets.GREPO_ACCOUNT }}
+          GREPO_COOKIES:              ${{ secrets.GREPO_COOKIES }}
+          GCT_CONFIG_SECRET:          ${{ secrets.GCT_CONFIG_SECRET }}
+          GCT_SECRET_WRITER_TOKEN:    ${{ secrets.GCT_SECRET_WRITER_TOKEN }}
+          SCHEDULED_START:            ${{ inputs.scheduled_start }}
+          FEATURES:                   ${{ inputs.features }}
+          RUN_ID:                     ${{ inputs.run_id }}
+          GAS_CALLBACK_URL:           ${{ inputs.gas_callback_url }}
+          # Automatisch beschikbaar in GitHub Actions:
+          # GITHUB_REPOSITORY = "owner/repo"
+        run: node index.js
