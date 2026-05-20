@@ -22,18 +22,28 @@ export async function runBuildings(ctx) {
   );
 
   const html = data?.html ?? "";
-  const m = html.match(/var building_data\s*=\s*(\{[\s\S]+?\});\s*[\s\S]*?BuildingOverview/);
 
-  if (!m) {
-    console.warn("[buildings] building_data niet gevonden");
-    return { summary: { in_queue: 0 } };
+  // Zoek var building_data = { ... } via brace-counter (robuuster dan regex voor geneste objecten)
+  let buildingData = null;
+  const varIdx = html.indexOf("var building_data = ");
+  if (varIdx !== -1) {
+    const startIdx = html.indexOf("{", varIdx);
+    if (startIdx !== -1) {
+      let depth = 0, endIdx = startIdx;
+      for (let i = startIdx; i < html.length; i++) {
+        if (html[i] === "{") depth++;
+        else if (html[i] === "}") { depth--; if (depth === 0) { endIdx = i; break; } }
+      }
+      try {
+        buildingData = JSON.parse(html.slice(startIdx, endIdx + 1));
+      } catch (e) {
+        console.warn("[buildings] parse fout:", e.message);
+      }
+    }
   }
 
-  let buildingData;
-  try {
-    buildingData = JSON.parse(m[1]);
-  } catch (e) {
-    console.warn("[buildings] parse fout:", e.message);
+  if (!buildingData) {
+    console.warn("[buildings] building_data niet gevonden in HTML");
     return { summary: { in_queue: 0 } };
   }
 
