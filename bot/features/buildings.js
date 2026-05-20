@@ -21,7 +21,16 @@ export async function runBuildings(ctx) {
     { town_id: session.activeTownId, nl_init: true }
   );
 
-  const html = data?.html ?? "";
+  // Debug: toon ruwe response structuur
+  console.log("[buildings] response type:", typeof data, "| keys:", data ? Object.keys(data).join(", ") : "null");
+  if (data && typeof data === "object") {
+    for (const [k, v] of Object.entries(data)) {
+      const preview = typeof v === "string" ? v.slice(0, 100) : JSON.stringify(v)?.slice(0, 100);
+      console.log(`[buildings]   .${k} =`, preview);
+    }
+  }
+
+  const html = data?.html ?? data?.plain?.html ?? "";
 
   // Zoek var building_data = { ... } via brace-counter (robuuster dan regex voor geneste objecten)
   let buildingData = null;
