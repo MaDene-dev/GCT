@@ -1,84 +1,78 @@
 /**
- * features/buildings.js — Gebouwen (monitoring only)
+ * features/buildings.js — Gebouwen monitoring
  *
- * Leest bouwwachtrijen via building_main per stad.
- * building_main geeft current_level (nu gebouwd) én level (na wachtrij).
+ * Gebruikt building_main?action=index per stad (town_overviews?action=building_overview
+ * retourneert een poll-response, geen bruikbare data).
+ *
+ * building_main geeft per stad: buildings object met current_level + level (na wachtrij).
  * level > current_level = in wachtrij.
  * Alle gebouwnamen zijn Engelse keys.
  */
 
-/**
- * @param {{ session, config }} ctx
- */
+import { randomSleep } from "../lib/delay.js";
+
 export async function runBuildings(ctx) {
   const { session } = ctx;
 
-  // building_overview geeft HTML voor alle steden in één call
-  const data = await session.gameGet(
-    "town_overviews",
+  // Haal alle eigen steden op via farm_town_overviews (hebben we al als activeTownId)
+  const townsData = await session.gameGet(
+    "farm_town_overviews",
     session.activeTownId,
-    "building_overview",
+    "index",
     { town_id: session.activeTownId, nl_init: true }
   );
 
-  // Debug: toon ruwe response structuur
-  console.log("[buildings] response type:", typeof data, "| keys:", data ? Object.keys(data).join(", ") : "null");
-  if (data && typeof data === "object") {
-    for (const [k, v] of Object.entries(data)) {
-      const preview = typeof v === "string" ? v.slice(0, 100) : JSON.stringify(v)?.slice(0, 100);
-      console.log(`[buildings]   .${k} =`, preview);
-    }
-  }
+  const towns = townsData?.towns
+    ? (Array.isArray(townsData.towns) ? townsData.towns : Object.values(townsData.towns))
+    : [];
 
-  const html = data?.html ?? data?.plain?.html ?? "";
-
-  // Zoek var building_data = { ... } via brace-counter (robuuster dan regex voor geneste objecten)
-  let buildingData = null;
-  const varIdx = html.indexOf("var building_data = ");
-  if (varIdx !== -1) {
-    const startIdx = html.indexOf("{", varIdx);
-    if (startIdx !== -1) {
-      let depth = 0, endIdx = startIdx;
-      for (let i = startIdx; i < html.length; i++) {
-        if (html[i] === "{") depth++;
-        else if (html[i] === "}") { depth--; if (depth === 0) { endIdx = i; break; } }
-      }
-      try {
-        buildingData = JSON.parse(html.slice(startIdx, endIdx + 1));
-      } catch (e) {
-        console.warn("[buildings] parse fout:", e.message);
-      }
-    }
-  }
-
-  if (!buildingData) {
-    // Debug: toon eerste 500 chars van HTML zodat we de juiste variabelenaam kunnen vinden
-    const snippet = (data?.html ?? "").slice(0, 500).replace(/\s+/g, " ");
-    console.warn("[buildings] building_data niet gevonden. HTML snippet:", snippet);
-    // Zoek alternatieven
-    const vars = (data?.html ?? "").match(/var (\w+)\s*=\s*\{/g);
-    console.warn("[buildings] Gevonden JS-variabelen:", vars?.join(", ") ?? "geen");
+  if (towns.length === 0) {
+    console.warn("[buildings] Geen steden gevonden");
     return { summary: { in_queue: 0 } };
   }
 
   const queued = [];
 
-  for (const [townId, buildings] of Object.entries(buildingData)) {
+  for (const town of towns) {
+    const data = await session.gameGet(
+      "building_main",
+      town.id,
+      "index",
+      { town_id: town.id, nl_init: true }
+    );
+
+    // building_main retourneert JSON met buildings object
+    // Structuur: data.buildings = { academy: { level, current_level }, ... }
+    // OF data.data.buildings = { ... }
+    const buildings = data?.buildings ?? data?.data?.buildings ?? null;
+
+    if (!buildings) {
+      console.log(`[buildings] ${town.name}: geen building_data (keys: ${Object.keys(data ?? {}).join(", ")})`);
+      await randomSleep(0.5, 1);
+      continue;
+    }
+
     for (const [building, info] of Object.entries(buildings)) {
-      // level > current_level = in wachtrij
-      const currentLevel = info?.current_level ?? 0;
-      const targetLevel  = info?.level         ?? 0;
+      const currentLevel = info?.current_level ?? info?.level ?? 0;
+      const targetLevel  = info?.level ?? 0;
       if (targetLevel > currentLevel) {
         queued.push({
-          town_id:  parseInt(townId, 10),
+          town_id:  town.id,
+          name:     town.name,
           building,
           current:  currentLevel,
           target:   targetLevel,
         });
       }
     }
+
+    await randomSleep(0.5, 1);
   }
 
   console.log(`[buildings] ${queued.length} gebouwen in wachtrij`);
+  if (queued.length > 0) {
+    console.log("[buildings] Wachtrij:", queued.map(q => `${q.name}:${q.building}(${q.current}→${q.target})`).join(", "));
+  }
+
   return { summary: { in_queue: queued.length, queue: queued } };
 }
