@@ -1,0 +1,164 @@
+/**
+ * features/culture.js — Cultuur
+ *
+ * Fixes in deze versie:
+ *  B8: Gebruik townResources uit ctx (van RB) i.p.v. zware API-call
+ *  B10: canStart_ regex — type_${type}[\\s"] ipv [^"]*
+ */
+
+import { randomSleep } from "../lib/delay.js";
+import { runResourceBalancer } from "./resource-balancer.js";
+
+const COSTS = {
+  party:   { wood: 15_000, stone: 18_000, iron: 15_000 },
+  theater: { wood: 10_000, stone: 12_000, iron: 10_000 },
+  triumph: { wood: 0,      stone: 0,      iron: 0      },
+};
+
+const HOUR = 3_600;
+
+export async function runCulture(ctx) {
+  const { session, config, townResources } = ctx;
+  const cultureCfg = config.culture?.towns ?? {};
+
+  if (Object.keys(cultureCfg).length === 0) {
+    console.log("[culture] Geen cultuur-config");
+    return { summary: { started: 0, skipped: 0 } };
+  }
+
+  const buildingData = await fetchBuildingLevels_(session);
+
+  let started = 0;
+  let skipped = 0;
+
+  for (const [townIdStr, types] of Object.entries(cultureCfg)) {
+    const townId = parseInt(townIdStr, 10);
+
+    const cultureData = await session.gameGet(
+      "town_overviews", townId, "culture_overview",
+      { town_id: townId, nl_init: true }
+    );
+
+    const html = cultureData?.html ?? "";
+
+    let running = [];
+    const m = html.match(/CultureOverview\.init\(\s*(\[[\s\S]*?\])/);
+    if (m) { try { running = JSON.parse(m[1]); } catch { /* leeg */ } }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    for (const type of types) {
+      if (type === "games") continue;
+
+      const active = running.find(c => c.celebration_type === type);
+      if (active) {
+        const left = active.finished_at - now;
+        console.log(`[culture] ${townId} ${type}: loopt nog (${Math.round(left / 60)}min)`);
+        if (left < HOUR && COSTS[type]?.wood > 0) {
+          await runResourceBalancer({ ...ctx, forcedReceiver: { townId, need: COSTS[type] } });
+        }
+        continue;
+      }
+
+      const levels = buildingData[townId] ?? {};
+      if (type === "party"   && (levels.academy  ?? 0) < 30) { skipped++; continue; }
+      if (type === "theater" && (levels.theater   ?? 0) < 1)  { skipped++; continue; }
+
+      // B10-fix: regex matcht type exact, geen prefix-vals
+      if (!canStart_(html, type)) { skipped++; continue; }
+
+      const cost = COSTS[type];
+      if (cost.wood > 0 || cost.stone > 0 || cost.iron > 0) {
+        // B8-fix: gebruik townResources van RB als beschikbaar, anders API-call
+        const res = townResources?.get(townId)
+          ?? await fetchTownResourcesFromOverview_(session, townId);
+
+        const need = {
+          wood:  Math.max(0, cost.wood  - (res.wood  ?? 0)),
+          stone: Math.max(0, cost.stone - (res.stone ?? 0)),
+          iron:  Math.max(0, cost.iron  - (res.iron  ?? 0)),
+        };
+
+        if (need.wood + need.stone + need.iron > 0) {
+          console.log(`[culture] ${townId} ${type}: grondstoffen te kort — inline balancer pass`);
+          const rbResult = await runResourceBalancer({
+            ...ctx, forcedReceiver: { townId, need },
+          });
+
+          // Hercheck met bijgewerkte resources (uit RB result of opnieuw ophalen)
+          const updated = rbResult?.townResources?.get(townId)
+            ?? await fetchTownResourcesFromOverview_(session, townId);
+
+          if ((updated.wood ?? 0) < cost.wood ||
+              (updated.stone ?? 0) < cost.stone ||
+              (updated.iron ?? 0) < cost.iron) {
+            console.warn(`[culture] ${townId} ${type}: na balancer nog te weinig — overgeslagen`);
+            skipped++;
+            continue;
+          }
+        }
+      }
+
+      console.log(`[culture] ${townId} ${type}: starten…`);
+      const result = await session.gamePost(
+        "town_overviews", townId, "start_celebration",
+        { town_id: townId },
+        { celebration_type: type }
+      );
+
+      if (result?.success || (typeof result?.success === "string" && result.success.length > 0)) {
+        console.log(`[culture] ✓ ${townId} ${type} gestart`);
+        started++;
+      } else {
+        console.warn(`[culture] ${townId} ${type}: start mislukt`, result);
+        skipped++;
+      }
+
+      await randomSleep(1, 3);
+    }
+  }
+
+  return { summary: { started, skipped } };
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+async function fetchBuildingLevels_(session) {
+  const data = await session.gameGet(
+    "town_overviews", session.activeTownId, "building_overview",
+    { town_id: session.activeTownId, nl_init: true }
+  );
+  const html = data?.html ?? "";
+  const m = html.match(/var building_data\s*=\s*(\{[\s\S]+?\});\s*[\s\S]*?BuildingOverview/);
+  if (!m) return {};
+  try {
+    const raw = JSON.parse(m[1]);
+    const result = {};
+    for (const [tid, buildings] of Object.entries(raw)) {
+      result[parseInt(tid, 10)] = {};
+      for (const [key, val] of Object.entries(buildings)) {
+        result[parseInt(tid, 10)][key] = val?.current_level ?? 0;
+      }
+    }
+    return result;
+  } catch { return {}; }
+}
+
+/** Fallback: gebruik farm_town_overviews als townResources niet beschikbaar is */
+async function fetchTownResourcesFromOverview_(session, townId) {
+  const data = await session.gameGet(
+    "farm_town_overviews", session.activeTownId, "index",
+    { town_id: session.activeTownId, nl_init: true }
+  );
+  const town = (data?.towns ?? []).find(t => t.id === townId);
+  return { wood: town?.wood ?? 0, stone: town?.stone ?? 0, iron: town?.iron ?? 0 };
+}
+
+/** B10-fix: exact type-match, geen prefix-overlap */
+function canStart_(html, type) {
+  // Startbaar: class="confirm type_party " (spatie of " na type)
+  // Niet-startbaar: class="confirm type_party disabled"
+  const hasButton  = new RegExp(`class="confirm type_${type}[\\s"]`).test(html);
+  const isDisabled = new RegExp(`class="confirm type_${type}[^"]*disabled`).test(html);
+  return hasButton && !isDisabled;
+}
