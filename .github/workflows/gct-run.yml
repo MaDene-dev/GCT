@@ -40,7 +40,7 @@ jobs:
         # BOT_DIR is een GitHub Actions repository variable (Settings → Variables)
         # Default: "bot" — pas aan als de bot-map ergens anders zit in de repo
         working-directory: ${{ vars.BOT_DIR || 'bot' }}
-        run: npm ci
+        run: npm install
 
       - name: Run GCT bot
         working-directory: ${{ vars.BOT_DIR || 'bot' }}
