@@ -154,7 +154,16 @@ export async function runResourceBalancer(ctx) {
     }
   }
 
-  // ── 3c. Nivelleren — L5: hybride donor/ontvanger ───────────────────────
+  // ── 3c. Nivelleren ──────────────────────────────────────────────────────
+  //
+  // Twee niveaus:
+  //  A) Overflow-relief: als er urgentDonors zijn → stuur naar ELKE stad met ruimte
+  //     (onder overflowPct), want doel is storage vrijmaken voor farming
+  //  B) Normale nivellering: stuur naar steden onder globalMinPct
+  //
+  // Ontvangers gesorteerd op meeste relatieve ruimte (laagste fill% eerst)
+
+  const hasUrgent = urgentDonors && urgentDonors.length > 0;
 
   const sortedByRoom = [...state.values()].sort((a, b) => {
     const fillA = Math.max(
@@ -167,18 +176,28 @@ export async function runResourceBalancer(ctx) {
       b.eff_stone / num(b.storage_volume),
       b.eff_iron  / num(b.storage_volume),
     );
-    return fillA - fillB; // laagste fill% eerst (meeste ruimte)
+    return fillA - fillB;
   });
 
   for (const receiver of sortedByRoom) {
     const storage = num(receiver.storage_volume);
+
     for (const res of ["wood", "stone", "iron"]) {
       const fillPct = receiver[`eff_${res}`] / storage;
-      if (fillPct >= globalMinPct) continue;
 
-      // L5-fix: ook steden met cap > 0 mogen ontvanger zijn als fill% < globalMinPct
-      // (vroeger: if (receiver.cap > 0) continue)
-      const needed = ceilTo500((globalMinPct - fillPct) * storage);
+      let targetPct;
+      if (hasUrgent) {
+        // A) Overflow-relief: vul aan tot net onder overflowPct zodat farming ruimte heeft
+        if (fillPct >= overflowPct - 0.05) continue; // al genoeg ruimte
+        targetPct = overflowPct - 0.05; // laat 5% buffer onder overflow-drempel
+      } else {
+        // B) Normale nivellering: alleen steden onder globalMinPct aanvullen
+        if (fillPct >= globalMinPct) continue;
+        targetPct = globalMinPct;
+      }
+
+      // L5-fix: stad met markt (cap > 0) mag ook ontvanger zijn als fill% laag genoeg
+      const needed = ceilTo500((targetPct - fillPct) * storage);
       if (needed > 0) sendFromDonor(null, receiver.id, res, needed);
     }
   }
