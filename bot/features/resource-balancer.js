@@ -265,8 +265,41 @@ export async function runResourceBalancer(ctx) {
     });
   }
 
+  // Debug: toon per stad de fill% per resource na planning
+  for (const [id, town] of state) {
+    const s = num(town.storage_volume) || 1;
+    const w = Math.round(town.eff_wood  / s * 100);
+    const st = Math.round(town.eff_stone / s * 100);
+    const ir = Math.round(town.eff_iron  / s * 100);
+    const capStr = town.cap > 0 ? `cap:${town.cap}` : "geen markt";
+    if (w > 80 || st > 80 || ir > 80) {
+      console.log(`[resource-balancer] ${town.name}: hout ${w}% steen ${st}% zilver ${ir}% | ${capStr}`);
+    }
+  }
+
+  // B9: als er overflow is maar 0 transfers → alles vol, stuur alert
+  if (transfersDone === 0 && urgentDonors && urgentDonors.length > 0) {
+    console.warn(`[resource-balancer] ⚠ ${urgentDonors.length} overlopende steden maar 0 transfers`);
+    // Toon waarom: per resource checken of er donors/receivers zijn
+    for (const res of ["wood", "stone", "iron"]) {
+      const resKey = res === "wood" ? "hout" : res === "stone" ? "steen" : "zilver";
+      const donors = [...state.values()].filter(t => t.cap > 0 && donorAvailable(t, res) > 0);
+      const receivers = [...state.values()].filter(t => {
+        const fillPct = t[`eff_${res}`] / (num(t.storage_volume) || 1);
+        return fillPct < (overflowPct - 0.05);
+      });
+      console.log(`[resource-balancer]   ${resKey}: ${donors.length} donors beschikbaar, ${receivers.length} ontvangers beschikbaar`);
+    }
+  }
+
   console.log(`[resource-balancer] ✓ ${transfersDone} transfers`);
-  return { summary: { transfers: transfersDone }, townResources };
+  return {
+    summary: {
+      transfers: transfersDone,
+      all_full: transfersDone === 0 && urgentDonors && urgentDonors.length > 0,
+    },
+    townResources,
+  };
 }
 
 const num = (v) => (v !== null && v !== undefined ? Number(v) : 0);
