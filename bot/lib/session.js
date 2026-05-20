@@ -45,7 +45,14 @@ class Session {
     const html = await res.text();
 
     const cookieCount = this._cookieCount();
-    if (html.length < 200_000 || cookieCount < 12) {
+    // Debug: toon eerste 300 chars van response zodat we zien wat we terugkrijgen
+    if (html.length < 200000) {
+      console.warn(`[session] Ongeldig — html=${html.length}b cookies=${cookieCount}`);
+      console.warn(`[session] URL: ${url}`);
+      console.warn(`[session] Response snippet: ${html.slice(0, 300).replace(/\s+/g, " ")}`);
+      return false;
+    }
+    if (cookieCount < 12) {
       console.warn(`[session] Ongeldig — html=${html.length}b cookies=${cookieCount}`);
       return false;
     }
