@@ -191,12 +191,31 @@ export async function runFarmAgent(ctx) {
     .filter(Boolean);
   const nextReadyTs = nextReadyAll.length ? Math.min(...nextReadyAll) : null;
 
-  // Bouw overview van alle steden voor het dashboard
-  // Gebruik updatedTowns waar beschikbaar, anders allTowns
+  // Slanke overview — alleen velden die dashboard nodig heeft
   const updatedMap = new Map(updatedTowns.map(t => [t.id, t]));
-  const overview = allTowns.map(t => updatedMap.get(t.id) ?? t);
+  const overview = allTowns.map(t => {
+    const u = updatedMap.get(t.id) ?? t;
+    return {
+      id:             u.id,
+      name:           u.name,
+      wood:           u.wood,
+      stone:          u.stone,
+      iron:           u.iron,
+      storage_volume: u.storage_volume,
+      population:     u.population,
+      free_population: u.free_population,
+      island_x:       u.island_x,
+      island_y:       u.island_y,
+    };
+  });
 
   console.log(`[farm-agent] ✓ ${townIds.length} steden geclaimd | overflow: ${overflowTowns.length}`);
+
+  // Stuur new_assignments als apart klein event zodat ze altijd aankomen
+  if (Object.keys(newAssignments).length > 0) {
+    const { sendEvent } = await import("../lib/events.js");
+    await sendEvent(ctx.gasCallbackUrl, ctx.runId, "island_assignments_update", newAssignments);
+  }
 
   return {
     overflowTowns,
@@ -205,8 +224,7 @@ export async function runFarmAgent(ctx) {
       total_gained:    totalGained,
       overflow_towns:  overflowTowns.length,
       next_ready_ts:   nextReadyTs,
-      new_assignments: newAssignments,
-      overview,          // volledige stadslijst voor dashboard
+      overview,
     },
   };
 }
