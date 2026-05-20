@@ -153,7 +153,10 @@ export async function runFarmAgent(ctx) {
 
   // ── 5. Opbrengst berekenen + overflow detecteren ───────────────────────
 
-  const updatedTowns = claimResult?.towns ?? [];
+  const rawUpdated   = claimResult?.towns ?? [];
+  const updatedTowns = Array.isArray(rawUpdated)
+    ? rawUpdated
+    : Object.values(rawUpdated);
   const overflowTowns = [];
   let totalGained = { wood: 0, stone: 0, iron: 0 };
 
