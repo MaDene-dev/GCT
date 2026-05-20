@@ -37,6 +37,12 @@ export async function runResourceBalancer(ctx) {
     return { summary: { transfers: 0 }, townResources: new Map() };
   }
 
+  // Debug: toon cap-waarden eerste run zodat we het veld kunnen verifiëren
+  const capSample = rawTowns.slice(0, 3).map(t => `${t.name}:cap=${t.cap}`).join(", ");
+  console.log(`[resource-balancer] Cap-sample: ${capSample}`);
+  const townsWithCap = rawTowns.filter(t => num(t.cap) > 0).length;
+  console.log(`[resource-balancer] Steden met cap>0: ${townsWithCap}/${rawTowns.length}`);
+
   // ── Effectieve resources (huidig + onderweg) ───────────────────────────
 
   const inTransit = new Map(rawTowns.map(t => [t.id, { wood: 0, stone: 0, iron: 0 }]));
