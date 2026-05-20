@@ -14,7 +14,7 @@ export async function sendEvent(gasUrl, runId, type, payload = {}) {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body,
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) console.warn(`[events] POST "${type}" → HTTP ${res.status}`);
     else         console.log(`[events] ✓ ${type}`);
