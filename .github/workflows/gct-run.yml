@@ -20,10 +20,6 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: read
-  # secrets: write kan niet via GITHUB_TOKEN — gebruik GCT_SECRET_WRITER_TOKEN (PAT)
-
 jobs:
   gct-bot:
     runs-on: ubuntu-latest
@@ -37,22 +33,21 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
-        # BOT_DIR is een GitHub Actions repository variable (Settings → Variables)
-        # Default: "bot" — pas aan als de bot-map ergens anders zit in de repo
         working-directory: ${{ vars.BOT_DIR || 'bot' }}
         run: npm install
 
       - name: Run GCT bot
         working-directory: ${{ vars.BOT_DIR || 'bot' }}
         env:
-          GREPO_ACCOUNT:              ${{ secrets.GREPO_ACCOUNT }}
-          GREPO_COOKIES:              ${{ secrets.GREPO_COOKIES }}
-          GCT_CONFIG_SECRET:          ${{ secrets.GCT_CONFIG_SECRET }}
-          GCT_SECRET_WRITER_TOKEN:    ${{ secrets.GCT_SECRET_WRITER_TOKEN }}
-          SCHEDULED_START:            ${{ inputs.scheduled_start }}
-          FEATURES:                   ${{ inputs.features }}
-          RUN_ID:                     ${{ inputs.run_id }}
-          GAS_CALLBACK_URL:           ${{ inputs.gas_callback_url }}
-          # Automatisch beschikbaar in GitHub Actions:
-          # GITHUB_REPOSITORY = "owner/repo"
+          GREPO_USERNAME:          ${{ secrets.GREPO_USERNAME }}
+          GREPO_PASSWORD:          ${{ secrets.GREPO_PASSWORD }}
+          GREPO_WORLD:             ${{ secrets.GREPO_WORLD }}
+          GREPO_PLAYER_ID:         ${{ secrets.GREPO_PLAYER_ID }}
+          GREPO_COOKIES:           ${{ secrets.GREPO_COOKIES }}
+          GCT_CONFIG_SECRET:       ${{ secrets.GCT_CONFIG_SECRET }}
+          GCT_SECRET_WRITER_TOKEN: ${{ secrets.GCT_SECRET_WRITER_TOKEN }}
+          SCHEDULED_START:         ${{ inputs.scheduled_start }}
+          FEATURES:                ${{ inputs.features }}
+          RUN_ID:                  ${{ inputs.run_id }}
+          GAS_CALLBACK_URL:        ${{ inputs.gas_callback_url }}
         run: node index.js
