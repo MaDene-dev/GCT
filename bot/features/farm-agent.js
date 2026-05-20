@@ -9,6 +9,7 @@
  */
 
 import { randomSleep, shuffle } from "../lib/delay.js";
+import { fetchHidesData }        from "./hides.js";
 
 // Profiel → time_options mapping (seconden)
 const PROFILE_OPTIONS = {
@@ -211,30 +212,52 @@ export async function runFarmAgent(ctx) {
     .filter(Boolean);
   const nextReadyTs = nextReadyAll.length ? Math.min(...nextReadyAll) : null;
 
-  // Slanke overview — alleen velden die dashboard nodig heeft
+  // Haal grottendata op
+  const hidesData = await fetchHidesData(session);
+
+  // Slanke overview met productie, bevolking en grot-data
   const updatedMap = new Map(updatedTowns.map(t => [t.id, t]));
   const overview = allTowns.map(t => {
-    const u = updatedMap.get(t.id) ?? t;
+    const u    = updatedMap.get(t.id) ?? t;
+    const hide = hidesData[u.id] ?? hidesData[String(u.id)] ?? {};
     return {
-      id:             u.id,
-      name:           u.name,
-      wood:           u.wood,
-      stone:          u.stone,
-      iron:           u.iron,
-      storage_volume: u.storage_volume,
-      population:     u.population,
+      id:              u.id,
+      name:            u.name,
+      wood:            u.wood,
+      stone:           u.stone,
+      iron:            u.iron,
+      storage_volume:  u.storage_volume,
+      population:      u.population,
       free_population: u.free_population,
-      island_x:       u.island_x,
-      island_y:       u.island_y,
+      production:      u.production,       // { wood, stone, iron } per uur
+      cave_silver:     hide.iron_stored ?? null,
+      cave_max:        hide.max_storage ?? null,
+      island_x:        u.island_x,
+      island_y:        u.island_y,
     };
   });
 
   console.log(`[farm-agent] ✓ ${townIds.length} steden geclaimd | overflow: ${overflowTowns.length}`);
 
-  // Stuur new_assignments als apart klein event zodat ze altijd aankomen
-  if (Object.keys(newAssignments).length > 0) {
+  // Bouw islandTownMap (welke steden per eiland) voor dashboard-weergave
+  const islandTownMap = {};
+  for (const [key, towns] of islandMap) {
+    if (towns.length > 1) {
+      islandTownMap[key] = towns.map(t => ({
+        id:    t.id,
+        name:  t.name,
+        booty: t.booty_researched ?? false,
+      }));
+    }
+  }
+
+  // Stuur assignments + islandTownMap als apart klein event
+  if (Object.keys(newAssignments).length > 0 || Object.keys(islandTownMap).length > 0) {
     const { sendEvent } = await import("../lib/events.js");
-    await sendEvent(ctx.gasCallbackUrl, ctx.runId, "island_assignments_update", newAssignments);
+    await sendEvent(ctx.gasCallbackUrl, ctx.runId, "island_assignments_update", {
+      assignments: newAssignments,
+      islandTownMap,
+    });
   }
 
   return {
