@@ -174,14 +174,18 @@ class Session {
     }
 
     // CSRF-token ALLEEN verversen vanuit de game-HTML, nooit vanuit t_token.
-    // t_token in trade_overview is een town-ID, geen CSRF-token.
-    // Sommige responses sturen een verse csrfToken mee:
     const freshCsrf = data?.json?.csrfToken ?? data?.csrfToken;
     if (freshCsrf && typeof freshCsrf === "string" && freshCsrf.length > 8) {
       this.csrf = freshCsrf;
     }
 
-    return data?.json ?? data;
+    // Unwrap .json maar bewaar .html als _html zodat callers het kunnen lezen
+    // (bv. building_main retourneert { html: "...", json: {}, ... })
+    const result = data?.json ?? data;
+    if (data?.html && typeof result === "object" && result !== null) {
+      result._html = data.html;
+    }
+    return result;
   }
 
   _isExpired(text) {
