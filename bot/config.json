@@ -1,0 +1,34 @@
+{
+  "_note": "Dit is de fallback config. De echte config wordt bij elke run opgehaald via GAS (optie B). Credentials nooit hier — gebruik GitHub Secrets.",
+
+  "farmAgent": {
+    "islandAssignments": {}
+  },
+
+  "resourceBalancer": {
+    "overflowThresholdPct": 0.90,
+    "globalMinPct": 0.30,
+    "priorityTowns": []
+  },
+
+  "culture": {
+    "towns": {}
+  },
+
+  "features": {
+    "farmAgent":       true,
+    "resourceBalancer": true,
+    "culture":         false,
+    "buildings":       true,
+    "military":        true
+  },
+
+  "scheduler": {
+    "profile": "intense",
+    "quietHours": {
+      "enabled": false,
+      "from": "02:00",
+      "to": "07:00"
+    }
+  }
+}
