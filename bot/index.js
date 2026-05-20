@@ -1,14 +1,5 @@
 /**
  * index.js — Grepolis Control Tower Bot
- *
- * Lifecycle:
- *  1. Parse env
- *  2. Wacht tot scheduled_start
- *  3. Stuur 'bot_starting' heartbeat (L7 — vóór login)
- *  4. Haal config op van GAS
- *  5. Herstel / valideer sessie; bij Puppeteer-login: cookies terugschrijven (K3)
- *  6. Voer features uit (farm → RB → culture → buildings → military)
- *  7. Stuur run_done, exit clean
  */
 
 import { loadConfig }         from "./lib/config.js";
@@ -26,33 +17,54 @@ import { runMilitary }         from "./features/military.js";
 
 // ── 1. Parse env ──────────────────────────────────────────────────────────
 
-let scheduledStart, features, runId, gasCallbackUrl, account, rawCookies;
+const scheduledStart = parseInt(process.env.SCHEDULED_START, 10);
+const runId          = process.env.RUN_ID;
+const gasCallbackUrl = process.env.GAS_CALLBACK_URL;
+const rawCookies     = process.env.GREPO_COOKIES ?? "";
 
+// Credentials — elk een aparte secret, geen JSON-parsing nodig
+const account = {
+  username:  process.env.GREPO_USERNAME,
+  password:  process.env.GREPO_PASSWORD,
+  world:     process.env.GREPO_WORLD,
+  player_id: parseInt(process.env.GREPO_PLAYER_ID, 10),
+};
+
+let features;
 try {
-  scheduledStart  = parseInt(process.env.SCHEDULED_START, 10);
-  features        = JSON.parse(process.env.FEATURES);
-  runId           = process.env.RUN_ID;
-  gasCallbackUrl  = process.env.GAS_CALLBACK_URL;
-  account         = JSON.parse(process.env.GREPO_ACCOUNT);
-  rawCookies      = process.env.GREPO_COOKIES ?? "";
-
-  if (!scheduledStart || !features || !runId || !gasCallbackUrl || !account?.world) {
-    throw new Error("Verplichte environment variables ontbreken");
-  }
-} catch (err) {
-  console.error("[boot] Env parse fout:", err.message);
+  features = JSON.parse(process.env.FEATURES);
+} catch (e) {
+  console.error("[boot] FEATURES parse fout:", e.message, "| waarde:", process.env.FEATURES);
   process.exit(1);
 }
+
+// Validatie
+const missing = [];
+if (!scheduledStart)      missing.push("SCHEDULED_START");
+if (!features?.length)    missing.push("FEATURES");
+if (!runId)               missing.push("RUN_ID");
+if (!gasCallbackUrl)      missing.push("GAS_CALLBACK_URL");
+if (!account.username)    missing.push("GREPO_USERNAME");
+if (!account.password)    missing.push("GREPO_PASSWORD");
+if (!account.world)       missing.push("GREPO_WORLD");
+if (!account.player_id)   missing.push("GREPO_PLAYER_ID");
+
+if (missing.length > 0) {
+  console.error("[boot] Ontbrekende env vars:", missing.join(", "));
+  process.exit(1);
+}
+
+console.log(`[boot] World: ${account.world} | Player: ${account.player_id} | Features: ${features.join(", ")}`);
 
 // ── 2. Wacht tot scheduled_start ─────────────────────────────────────────
 
 const msUntilStart = scheduledStart - Date.now();
 if (msUntilStart > 0) {
-  console.log(`[boot] Wacht ${Math.round(msUntilStart / 1000)}s tot scheduled_start…`);
+  console.log(`[boot] Wacht ${Math.round(msUntilStart / 1000)}s…`);
   await sleep(msUntilStart);
 }
 
-// ── 3. Vroeg heartbeat — L7: vóór login, GAS weet dat de bot leeft ───────
+// ── 3. Vroeg heartbeat ────────────────────────────────────────────────────
 
 await sendEvent(gasCallbackUrl, runId, "bot_starting", { features });
 
@@ -71,14 +83,10 @@ try {
   if (!valid) {
     console.log("[auth] Cookies verlopen — Puppeteer login starten…");
     const freshCookies = await loginWithPuppeteer(account);
-
-    // K3: verse cookies terugschrijven naar GitHub Secret (fire-and-forget)
     await updateCookieSecret(freshCookies);
-
     session = createSession(account.world, freshCookies);
     const validAfterLogin = await session.validate();
     if (!validAfterLogin) throw new Error("Sessie ongeldig ook na Puppeteer-login");
-
     await sendEvent(gasCallbackUrl, runId, "login_success", {});
   }
 } catch (err) {
@@ -102,15 +110,12 @@ const FEATURE_MAP = {
 
 const ctx = { session, config, account, gasCallbackUrl, runId };
 
-let overflowTowns  = [];
-let townResources  = null; // B8: gedeeld tussen RB en culture
+let overflowTowns = [];
+let townResources = null;
 
 for (const name of FEATURE_ORDER) {
   if (!features.includes(name)) continue;
 
-  const runner = FEATURE_MAP[name];
-
-  // Verrijk ctx per feature met beschikbare data
   const featureCtx = {
     ...ctx,
     ...(name === "resourceBalancer" ? { urgentDonors: overflowTowns } : {}),
@@ -119,23 +124,17 @@ for (const name of FEATURE_ORDER) {
 
   try {
     console.log(`\n[runner] ▶ ${name}`);
-    const result = await runner(featureCtx);
+    const result = await (FEATURE_MAP[name])(featureCtx);
 
-    if (name === "farmAgent" && result?.overflowTowns) {
-      overflowTowns = result.overflowTowns;
-    }
-    // B8: RB retourneert townResources map voor culture
-    if (name === "resourceBalancer" && result?.townResources) {
-      townResources = result.townResources;
-    }
+    if (name === "farmAgent" && result?.overflowTowns)     overflowTowns = result.overflowTowns;
+    if (name === "resourceBalancer" && result?.townResources) townResources = result.townResources;
 
     await sendEvent(gasCallbackUrl, runId, `${name}_done`, result?.summary ?? {});
   } catch (err) {
     console.error(`[runner] ✗ ${name}:`, err.message);
     await sendEvent(gasCallbackUrl, runId, `${name}_error`, { error: err.message });
-
     if (err.message === "SESSION_EXPIRED") {
-      await sendEvent(gasCallbackUrl, runId, "run_error", { error: "Sessie verlopen tijdens run" });
+      await sendEvent(gasCallbackUrl, runId, "run_error", { error: "Sessie verlopen" });
       process.exit(1);
     }
   }
