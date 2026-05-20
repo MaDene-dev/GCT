@@ -43,7 +43,12 @@ export async function runBuildings(ctx) {
   }
 
   if (!buildingData) {
-    console.warn("[buildings] building_data niet gevonden in HTML");
+    // Debug: toon eerste 500 chars van HTML zodat we de juiste variabelenaam kunnen vinden
+    const snippet = (data?.html ?? "").slice(0, 500).replace(/\s+/g, " ");
+    console.warn("[buildings] building_data niet gevonden. HTML snippet:", snippet);
+    // Zoek alternatieven
+    const vars = (data?.html ?? "").match(/var (\w+)\s*=\s*\{/g);
+    console.warn("[buildings] Gevonden JS-variabelen:", vars?.join(", ") ?? "geen");
     return { summary: { in_queue: 0 } };
   }
 
