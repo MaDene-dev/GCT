@@ -172,6 +172,7 @@ export async function runResourceBalancer(ctx) {
   // ── 4. Transfers uitvoeren ─────────────────────────────────────────────
 
   let transfersDone = 0;
+  const executedTransfers = []; // voor KPI-detail in dashboard
 
   for (const plan of transferPlan.values()) {
     const { donorId, receiverId, wood, stone, iron } = plan;
@@ -197,9 +198,21 @@ export async function runResourceBalancer(ctx) {
 
     if (sends.wood + sends.stone + sends.iron <= 0) continue;
 
-    const donorName    = state.get(donorId)?.name    ?? donorId;
-    const receiverName = state.get(receiverId)?.name ?? receiverId;
-    console.log(`[resource-balancer] ${donorName} → ${receiverName}: w${sends.wood} s${sends.stone} i${sends.iron}`);
+    const donorName    = state.get(donorId)?.name    ?? String(donorId);
+    const receiverName = state.get(receiverId)?.name ?? String(receiverId);
+
+    // Reden bepalen (overflow vs prioriteit vs nivellering)
+    const isUrgent   = urgentIds.has(donorId);
+    const isPriority = priorityDefs.some(d => d.id === receiverId);
+    const reason     = isPriority ? "prioriteitsstad" : isUrgent ? "overflow-relief" : "nivellering";
+
+    // Audit-log: duidelijk wie → hoeveel per resource → naar wie + reden
+    const resStr = [
+      sends.wood  > 0 ? `🪵 ${sends.wood.toLocaleString("nl-BE")}`  : "",
+      sends.stone > 0 ? `🪨 ${sends.stone.toLocaleString("nl-BE")}` : "",
+      sends.iron  > 0 ? `🪙 ${sends.iron.toLocaleString("nl-BE")}`  : "",
+    ].filter(Boolean).join(" ");
+    console.log(`[resource-balancer] ${donorName} → ${receiverName} | ${resStr} | reden: ${reason}`);
 
     try {
       await session.gamePost(
@@ -209,6 +222,12 @@ export async function runResourceBalancer(ctx) {
         { from: donorId, to: receiverId, wood: sends.wood, stone: sends.stone, iron: sends.iron, town_id: donorId }
       );
       transfersDone++;
+      executedTransfers.push({
+        from: donorName, fromId: donorId,
+        to:   receiverName, toId: receiverId,
+        wood: sends.wood, stone: sends.stone, iron: sends.iron,
+        reason,
+      });
     } catch (err) {
       console.warn(`[resource-balancer] Trade mislukt: ${err.message}`);
     }
@@ -240,8 +259,9 @@ export async function runResourceBalancer(ctx) {
   console.log(`[resource-balancer] ✓ ${transfersDone} transfers`);
   return {
     summary: {
-      transfers: transfersDone,
-      all_full: transfersDone === 0 && urgentDonors && urgentDonors.length > 0,
+      transfers:     transfersDone,
+      transferList:  executedTransfers,
+      all_full:      transfersDone === 0 && urgentDonors && urgentDonors.length > 0,
     },
     townResources,
   };
