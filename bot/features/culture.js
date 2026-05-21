@@ -106,11 +106,13 @@ export async function runCulture(ctx) {
         { celebration_type: type }
       );
 
-      if (result?.success || (typeof result?.success === "string" && result.success.length > 0)) {
-        console.log(`[culture] ✓ ${townId} ${type} gestart`);
+      if (result?.success) {
+        const finishAt = result.finished_at;
+        console.log(`[culture] ✓ ${townId} ${type} gestart${finishAt ? ", eindigt "+new Date(finishAt*1000).toLocaleTimeString("nl-BE") : ""}`);
         started++;
       } else {
-        console.warn(`[culture] ${townId} ${type}: start mislukt`, result);
+        const errKey = result?.error?.key ?? result?.error ?? "onbekend";
+        console.warn(`[culture] ${townId} ${type}: start mislukt — ${errKey}`);
         skipped++;
       }
 
@@ -154,11 +156,12 @@ async function fetchTownResourcesFromOverview_(session, townId) {
   return { wood: town?.wood ?? 0, stone: town?.stone ?? 0, iron: town?.iron ?? 0 };
 }
 
-/** B10-fix: exact type-match, geen prefix-overlap */
+/** Controleer of een vieringstype gestart kan worden via button-klasse in HTML */
 function canStart_(html, type) {
-  // Startbaar: class="confirm type_party " (spatie of " na type)
-  // Niet-startbaar: class="confirm type_party disabled"
-  const hasButton  = new RegExp(`class="confirm type_${type}[\\s"]`).test(html);
-  const isDisabled = new RegExp(`class="confirm type_${type}[^"]*disabled`).test(html);
+  // Grepolis zet "disabled" als: viering loopt al, gebouwvereiste niet voldaan, of grondstoffen te kort
+  // class="confirm type_party  " (extra spatie, geen disabled) = startbaar
+  // class="confirm type_party disabled " = niet startbaar
+  const hasButton  = new RegExp('class="confirm type_' + type + '\\s').test(html);
+  const isDisabled = new RegExp('class="confirm type_' + type + '[^"]*disabled').test(html);
   return hasButton && !isDisabled;
 }
