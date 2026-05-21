@@ -73,31 +73,49 @@ export async function runFarmAgent(ctx) {
   }
   console.log(`[farm-agent] Bestaande assignments:`, JSON.stringify(assignments));
 
-  const assignedTowns = []; // de steden die daadwerkelijk farmen
-  const newAssignments = {}; // te rapporteren aan GAS voor auto-opslaan
+  const assignedTowns = [];
+  const newAssignments = {};
+
+  // Een stad is "vol" als alle drie resources boven 95% zitten
+  const isStorageFull = (t) => {
+    const s = t.storage_volume || 1;
+    return (t.wood  || 0) / s >= 0.95
+        && (t.stone || 0) / s >= 0.95
+        && (t.iron  || 0) / s >= 0.95;
+  };
 
   for (const [key, towns] of islandMap) {
-    if (towns.length === 1) {
-      // Sla ook enkelvoudige eilanden op zodat ze nooit opnieuw als "nieuw" worden gelogd
-      if (!assignments[key]) newAssignments[key] = towns[0].id;
-      assignedTowns.push(towns[0]);
-    } else {
-      // Meerdere steden op dit eiland
-      const assignedId = assignments[key];
-      const assigned = assignedId
-        ? towns.find(t => t.id === assignedId)
-        : null;
+    let primary;
 
-      if (assigned) {
-        console.log(`[farm-agent] Eiland ${key}: gebruikt ${assigned.name} (id:${assigned.id})`);
-        assignedTowns.push(assigned);
-      } else {
-        // Geen assignment → laagste ID als default
-        const defaultTown = towns.reduce((a, b) => a.id < b.id ? a : b);
-        assignedTowns.push(defaultTown);
-        newAssignments[key] = defaultTown.id;
-        console.log(`[farm-agent] Nieuw eiland ${key} (${towns.length} steden): default → ${defaultTown.name} (id:${defaultTown.id})`);
+    if (towns.length === 1) {
+      if (!assignments[key]) newAssignments[key] = towns[0].id;
+      primary = towns[0];
+    } else {
+      const assignedId = assignments[key];
+      primary = assignedId ? towns.find(t => t.id === assignedId) : null;
+      if (!primary) {
+        primary = towns.reduce((a, b) => a.id < b.id ? a : b);
+        newAssignments[key] = primary.id;
+        console.log(`[farm-agent] Nieuw eiland ${key}: default → ${primary.name}`);
       }
+    }
+
+    // Fallback: als primaire stad vol is, probeer alternatief op hetzelfde eiland
+    if (isStorageFull(primary)) {
+      const alternatives = towns.filter(t => t.id !== primary.id && !isStorageFull(t));
+      if (alternatives.length > 0) {
+        const fallback = alternatives[0];
+        console.log(`[farm-agent] Eiland ${key}: ${primary.name} vol → fallback naar ${fallback.name}`);
+        assignedTowns.push(fallback);
+      } else {
+        console.log(`[farm-agent] Eiland ${key}: alle steden vol — ${primary.name} toch gebruiken`);
+        assignedTowns.push(primary);
+      }
+    } else {
+      if (towns.length > 1) {
+        console.log(`[farm-agent] Eiland ${key}: gebruikt ${primary.name} (id:${primary.id})`);
+      }
+      assignedTowns.push(primary);
     }
   }
 
@@ -194,16 +212,15 @@ export async function runFarmAgent(ctx) {
     totalGained.stone += Math.max(0, gained.stone);
     totalGained.iron  += Math.max(0, gained.iron);
 
-    // Overflow detectie (per resource)
+    // Overflow detectie per resource
     const storage = updated.storage_volume ?? 1;
-    const maxFill = Math.max(
-      (updated.wood  ?? 0) / storage,
-      (updated.stone ?? 0) / storage,
-      (updated.iron  ?? 0) / storage,
-    );
+    const pctW = Math.round((updated.wood  ?? 0) / storage * 100);
+    const pctS = Math.round((updated.stone ?? 0) / storage * 100);
+    const pctI = Math.round((updated.iron  ?? 0) / storage * 100);
+    const maxFill = Math.max(pctW, pctS, pctI) / 100;
     if (maxFill >= OVERFLOW_PCT) {
       overflowTowns.push(updated);
-      console.log(`[farm-agent] Overflow: ${updated.name} (${Math.round(maxFill * 100)}% vol)`);
+      console.log(`[farm-agent] Overflow: ${updated.name} — hout ${pctW}% steen ${pctS}% zilver ${pctI}%`);
     }
   }
 
