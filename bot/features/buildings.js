@@ -40,14 +40,30 @@ export async function runBuildings(ctx) {
       { town_id: town.id, nl_init: true }
     );
 
-    const html = data?._html ?? "";
+    // Probeer alle bekende paden voor HTML:
+    // 1. data.html = data.json.html (na _handleResponse unwrap) — primair
+    // 2. data._outer_html = originele data.html (als json leeg was)
+    // 3. data._plain_html = data.plain.html
+    const html = data?.html ?? data?._outer_html ?? data?._plain_html ?? "";
 
     if (!html) {
-      if (town === towns[0]) {
-        console.warn(`[buildings] Geen HTML ontvangen voor ${town.name}. Data keys: ${Object.keys(data ?? {}).join(", ")}`);
+      const keys = Object.keys(data ?? {}).join(", ");
+      console.warn(`[buildings] Geen HTML voor ${town.name}. Keys: ${keys}`);
+      // Toon waarden van eerste paar keys voor debug
+      for (const [k, v] of Object.entries(data ?? {}).slice(0, 4)) {
+        const preview = typeof v === "string" ? v.slice(0, 80) : JSON.stringify(v)?.slice(0, 80);
+        console.log(`[buildings]   ${k}: ${preview}`);
       }
       await randomSleep(0.5, 1);
       continue;
+    }
+    if (town === towns[0]) {
+      console.log(`[buildings] HTML pad gevonden voor ${town.name} (${html.length}b)`);
+      const hasBuilding = html.includes("BuildingMain.buildings");
+      console.log(`[buildings]   BuildingMain.buildings aanwezig: ${hasBuilding}`);
+      if (!hasBuilding) {
+        console.log(`[buildings]   HTML snippet: ${html.slice(0, 200).replace(/\s+/g, " ")}`);
+      }
     }
 
     // Reguliere gebouwen
