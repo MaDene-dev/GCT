@@ -87,10 +87,10 @@ export async function runCulture(ctx) {
       // Start de viering
       console.log(`[culture] ${townId} ${type}: starten…`);
       try {
+        // celebration_type moet in de JSON body zitten, niet als URL param (bevestigd via F12)
         const result = await session.gamePost(
-          "town_overviews", townId, "start_celebration",
-          { town_id: townId },
-          { celebration_type: type }
+          "town_overviews", session.activeTownId, "start_celebration",
+          { town_id: townId, celebration_type: type, no_bar: 1, nl_init: true }
         );
         if (result?.success) {
           const finishAt = result.finished_at;
