@@ -209,11 +209,14 @@ class Session {
       this.csrf = freshCsrf;
     }
 
-    // Unwrap .json maar bewaar .html als _html zodat callers het kunnen lezen
-    // (bv. building_main retourneert { html: "...", json: {}, ... })
+    // Unwrap .json maar bewaar extra paden als callers die nodig hebben:
+    //   data.plain.html  → result._plain_html  (hides_overview)
+    //   data.html        → result._outer_html  (buitenste html als fallback)
+    // Na unwrap: data.json.html is al beschikbaar als result.html
     const result = data?.json ?? data;
-    if (data?.html && typeof result === "object" && result !== null) {
-      result._html = data.html;
+    if (typeof result === "object" && result !== null) {
+      if (data?.plain?.html)  result._plain_html  = data.plain.html;
+      if (data?.html)         result._outer_html  = data.html;
     }
     return result;
   }
