@@ -136,23 +136,30 @@ function parseHides_(html) {
   const idx = html.indexOf(marker);
   if (idx === -1) return {};
 
-  // Zoek het tweede argument (het hide-object) — het eerste is 'resources', tweede is hides
-  let pos = html.indexOf(",", idx);
-  if (pos === -1) return {};
-  pos = html.indexOf(",", pos + 1); // sla 'resources' argument over
-  if (pos === -1) return {};
+  // Beide argumenten zijn inline objecten: sendMessage('...', {resources}, {hides})
+  // Stap 1: vind en sla het eerste object {resources} over
+  const obj1Start = html.indexOf("{", idx);
+  if (obj1Start === -1) return {};
 
-  const objStart = html.indexOf("{", pos);
-  if (objStart === -1) return {};
-
-  let depth = 0, objEnd = objStart;
-  for (let i = objStart; i < html.length; i++) {
+  let depth = 0, obj1End = obj1Start;
+  for (let i = obj1Start; i < html.length; i++) {
     if (html[i] === "{") depth++;
-    else if (html[i] === "}") { depth--; if (depth === 0) { objEnd = i; break; } }
+    else if (html[i] === "}") { depth--; if (depth === 0) { obj1End = i; break; } }
+  }
+
+  // Stap 2: vind het tweede object {hides per town_id}
+  const obj2Start = html.indexOf("{", obj1End + 1);
+  if (obj2Start === -1) return {};
+
+  depth = 0;
+  let obj2End = obj2Start;
+  for (let i = obj2Start; i < html.length; i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}") { depth--; if (depth === 0) { obj2End = i; break; } }
   }
 
   try {
-    return JSON.parse(html.slice(objStart, objEnd + 1));
+    return JSON.parse(html.slice(obj2Start, obj2End + 1));
   } catch (e) {
     console.warn("[buildings] Hides parse fout:", e.message);
     return {};
