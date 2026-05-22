@@ -19,9 +19,9 @@ export async function fetchHidesData(session) {
     { town_id: session.activeTownId, nl_init: true }
   );
 
-  // hides_overview geeft plain HTML terug (niet json.html maar plain.html)
-  // Na session-fix: data._html of data.html
-  const html = data?._html ?? data?.html ?? "";
+  // hides_overview geeft HTML terug via data.plain.html
+  // Na session-fix is dit bewaard als data._plain_html
+  const html = data?._plain_html ?? data?._outer_html ?? "";
 
   if (!html) {
     console.warn("[hides] Geen HTML ontvangen");
