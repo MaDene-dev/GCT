@@ -76,12 +76,15 @@ export async function runFarmAgent(ctx) {
   const assignedTowns = [];
   const newAssignments = {};
 
-  // Een stad is "vol" als alle drie resources boven 95% zitten
+  // Een stad is "te vol om te farmen" als minstens één resource boven OVERFLOW_PCT (85%) zit
+  // (boerderij ophalen heeft dan nauwelijks effect — opslag loopt snel vol)
   const isStorageFull = (t) => {
     const s = t.storage_volume || 1;
-    return (t.wood  || 0) / s >= 0.95
-        && (t.stone || 0) / s >= 0.95
-        && (t.iron  || 0) / s >= 0.95;
+    return Math.max(
+      (t.wood  || 0) / s,
+      (t.stone || 0) / s,
+      (t.iron  || 0) / s,
+    ) >= OVERFLOW_PCT;
   };
 
   for (const [key, towns] of islandMap) {
@@ -113,7 +116,11 @@ export async function runFarmAgent(ctx) {
       }
     } else {
       if (towns.length > 1) {
-        console.log(`[farm-agent] Eiland ${key}: gebruikt ${primary.name} (id:${primary.id})`);
+        const s = primary.storage_volume || 1;
+        const fillW = Math.round((primary.wood ||0)/s*100);
+        const fillS = Math.round((primary.stone||0)/s*100);
+        const fillI = Math.round((primary.iron ||0)/s*100);
+        console.log(`[farm-agent] Eiland ${key}: gebruikt ${primary.name} — hout ${fillW}% steen ${fillS}% zilver ${fillI}%`);
       }
       assignedTowns.push(primary);
     }
@@ -160,7 +167,7 @@ export async function runFarmAgent(ctx) {
     if (readyFarms.length > 0) {
       townsToFarm.push({ town, nextReady });
     } else {
-      console.log(`[farm-agent] ${town.name}: geen klare boerderijen${nextReady ? ` (klaar om ${new Date(nextReady * 1000).toLocaleTimeString("nl-BE")})` : ""}`);
+      console.log(`[farm-agent] ${town.name}: geen klare boerderijen${nextReady ? ` (klaar om ${new Date(nextReady * 1000).toLocaleTimeString("nl-BE", {timeZone:"Europe/Brussels"})})` : ""}`);
     }
 
     await randomSleep(0.5, 1.5);
