@@ -284,6 +284,12 @@ export async function runFarmAgent(ctx) {
     });
   }
 
+  // Stuur town-overview met punten voor het dashboard
+  const { sendEvent } = await import("../lib/events.js");
+  await sendEvent(ctx.gasCallbackUrl, ctx.runId, "towns_points", {
+    towns: allTowns.map(t => ({ id: t.id, name: t.name, points: t.points ?? 0 })),
+  });
+
   return {
     overflowTowns,
     summary: {
