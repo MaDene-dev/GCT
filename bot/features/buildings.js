@@ -31,6 +31,7 @@ export async function runBuildings(ctx) {
   }
 
   const queued = [];
+  const townBuildings = {}; // townId → { name, buildings: { lumber: {current, target}, ... } }
 
   for (const town of towns) {
     const data = await session.gameGet(
@@ -77,10 +78,12 @@ export async function runBuildings(ctx) {
       console.warn(`[buildings] Parse mislukt voor ${town.name}. HTML(400): ${html.slice(0, 400).replace(/\s+/g, " ")}`);
     }
 
+    const townLevels = {};
     for (const [building, info] of Object.entries(all)) {
       // current_level kan ontbreken zonder wachtrij → fallback naar level
       const currentLevel = info?.current_level ?? info?.level ?? 0;
       const targetLevel  = info?.level ?? currentLevel;
+      townLevels[building] = { current: currentLevel, target: targetLevel };
       if (targetLevel > currentLevel) {
         queued.push({
           town_id:  town.id,
@@ -91,6 +94,9 @@ export async function runBuildings(ctx) {
         });
       }
     }
+    if (Object.keys(townLevels).length > 0) {
+      townBuildings[town.id] = { name: town.name, levels: townLevels };
+    }
 
     await randomSleep(0.5, 1);
   }
@@ -100,7 +106,7 @@ export async function runBuildings(ctx) {
     console.log("[buildings]", queued.map(q => `${q.name}:${q.building}(${q.current}→${q.target})`).join(", "));
   }
 
-  return { summary: { in_queue: queued.length, queue: queued } };
+  return { summary: { in_queue: queued.length, queue: queued, townBuildings } };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
