@@ -9,11 +9,11 @@ import { sendEvent }          from "./lib/events.js";
 import { updateCookieSecret } from "./lib/secrets.js";
 import { sleep }              from "./lib/delay.js";
 
-import { runFarmAgent }        from "./features/farm-agent.js";
-import { runResourceBalancer } from "./features/resource-balancer.js";
-import { runCulture }          from "./features/culture.js";
-import { runBuildings }        from "./features/buildings.js";
-import { runMilitary }         from "./features/military.js";
+import { runFarmAgent }          from "./features/farm-agent.js";
+import { runResourceBalancer }   from "./features/resource-balancer.js";
+import { runCulture, fetchCultureOverview } from "./features/culture.js";
+import { runBuildings }          from "./features/buildings.js";
+import { runMilitary }           from "./features/military.js";
 
 // ── 1. Parse env ──────────────────────────────────────────────────────────
 
@@ -95,6 +95,13 @@ try {
 }
 
 await sendEvent(gasCallbackUrl, runId, "run_started", { features });
+
+// Stuur cultuuroverzicht (voor dashboard-configuratie) — fire-and-forget
+fetchCultureOverview(session).then(overview => {
+  if (Object.keys(overview).length > 0) {
+    sendEvent(gasCallbackUrl, runId, "culture_overview", { overview });
+  }
+}).catch(() => { /* niet kritiek */ });
 
 // ── 6. Feature runner ─────────────────────────────────────────────────────
 
