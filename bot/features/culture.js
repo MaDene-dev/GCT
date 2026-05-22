@@ -212,12 +212,62 @@ async function fetchTownResourcesFromOverview_(session, townId) {
   return { wood: town?.wood ?? 0, stone: town?.stone ?? 0, iron: town?.iron ?? 0 };
 }
 
-/** Controleer of een vieringstype gestart kan worden via button-klasse in HTML */
-function canStart_(html, type) {
-  // Grepolis zet "disabled" als: viering loopt al, gebouwvereiste niet voldaan, of grondstoffen te kort
-  // class="confirm type_party  " (extra spatie, geen disabled) = startbaar
-  // class="confirm type_party disabled " = niet startbaar
-  const hasButton  = new RegExp('class="confirm type_' + type + '\\s').test(html);
-  const isDisabled = new RegExp('class="confirm type_' + type + '[^"]*disabled').test(html);
-  return hasButton && !isDisabled;
+/** Controleer of een vieringstype gestart kan worden voor een specifieke stad */
+function canStart_(html, type, townId) {
+  // Zoek de button voor deze specifieke stad via het onclick-patroon
+  // onclick="return CultureOverview.startCelebration('party', 329);"
+  // Zoek het specifieke onclick-patroon voor deze stad
+  // Patroon in HTML: onclick="return CultureOverview.startCelebration('party', 329);"
+  const searchStr = "startCelebration('" + type + "', " + townId + ")";
+  const btnIdx = html.indexOf(searchStr);
+  if (btnIdx === -1) return false;
+
+  // Zoek de class="confirm type_X..." terug vóór het onclick
+  const snippet = html.slice(Math.max(0, btnIdx - 200), btnIdx);
+  const hasBtn = snippet.includes('class="confirm type_' + type);
+  const isDis  = snippet.includes('class="confirm type_' + type + ' disabled') ||
+                 snippet.includes('class="confirm type_' + type + ' disabled"');
+  // Twee spaties na type = enabled: class="confirm type_triumph  "
+  const isEnabled = snippet.includes('class="confirm type_' + type + '  "') ||
+                    (hasBtn && !isDis);
+  return isEnabled;
+}
+
+/**
+ * Parse CultureOverview.init() — retourneert running celebrations per stad
+ * Nieuw formaat (bevestigd): init({"329":{"party":{"timestamp":..., "formatted_time":"..."}}, ...}, {durations})
+ */
+function parseCultureInit_(html) {
+  const idx = html.indexOf('CultureOverview.init(');
+  if (idx === -1) return { running: {}, durations: {} };
+
+  // Eerste argument: object met running celebrations per stad
+  let pos = html.indexOf('{', idx);
+  if (pos === -1) return { running: {}, durations: {} };
+
+  const obj1 = extractObj_(html, pos);
+  let running = {};
+  if (obj1) { try { running = JSON.parse(obj1.str); } catch(e) { console.warn('[culture] parse running:', e.message); } }
+
+  // Tweede argument: duraties
+  let durations = {};
+  if (obj1) {
+    let pos2 = html.indexOf('{', obj1.end + 1);
+    if (pos2 !== -1) {
+      const obj2 = extractObj_(html, pos2);
+      if (obj2) { try { durations = JSON.parse(obj2.str); } catch {} }
+    }
+  }
+
+  return { running, durations };
+}
+
+function extractObj_(str, start) {
+  if (str[start] !== '{') return null;
+  let depth = 0, end = start;
+  for (let i = start; i < str.length; i++) {
+    if (str[i] === '{') depth++;
+    else if (str[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  return { str: str.slice(start, end + 1), end };
 }
