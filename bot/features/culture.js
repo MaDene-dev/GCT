@@ -120,7 +120,63 @@ export async function runCulture(ctx) {
     }
   }
 
-  return { summary: { started, skipped } };
+  return { summary: { started, skipped, towns_configured: Object.keys(cultureCfg).length } };
+}
+
+/**
+ * Haal cultuurstatus op voor alle steden (voor dashboard-weergave).
+ * Retourneert per stad: lopende vieringen + welke types beschikbaar/uitgeschakeld zijn.
+ */
+export async function fetchCultureOverview(session) {
+  const data = await session.gameGet(
+    "town_overviews",
+    session.activeTownId,
+    "culture_overview",
+    { town_id: session.activeTownId, nl_init: true }
+  );
+
+  // Na _handleResponse: data.json.html → data.html
+  const html = data?.html ?? "";
+  if (!html) return {};
+
+  // Parse lopende vieringen
+  let running = [];
+  const m = html.match(/CultureOverview\.init\(\s*(\[[\s\S]*?\])/);
+  if (m) { try { running = JSON.parse(m[1]); } catch { /* leeg */ } }
+
+  const now = Math.floor(Date.now() / 1000);
+  const result = {};
+
+  // Per stad: welke buttons zijn enabled vs disabled
+  const TYPES = ["party", "theater", "triumph"];
+
+  // Doorzoek HTML op stad-secties (elke stad heeft een eigen sectie met buttons)
+  // Patroon: de buttons bevatten data-town_id of zijn gegroepeerd per stad
+  // Simpelste aanpak: per type per stad button-klasse checken
+  for (const type of TYPES) {
+    // Zoek alle buttons van dit type
+    const btnRegex = new RegExp(`class="confirm type_${type}([^"]*)"[^>]*data-(?:town[_-]id|town_id)="(\d+)"`, "g");
+    let match;
+    while ((match = btnRegex.exec(html)) !== null) {
+      const classes = match[1];
+      const townId  = parseInt(match[2], 10);
+      if (!result[townId]) result[townId] = { running: [], available: [], disabled: [] };
+      if (classes.includes("disabled")) {
+        result[townId].disabled.push(type);
+      } else {
+        result[townId].available.push(type);
+      }
+    }
+  }
+
+  // Lopende vieringen toevoegen
+  for (const v of running) {
+    const tid = v.town_id;
+    if (!result[tid]) result[tid] = { running: [], available: [], disabled: [] };
+    result[tid].running.push({ type: v.celebration_type, finished_at: v.finished_at });
+  }
+
+  return result;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
