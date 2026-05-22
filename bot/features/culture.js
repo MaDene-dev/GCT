@@ -1,3 +1,4 @@
+console.log("[culture] Module v3 geladen");
 /**
  * features/culture.js — Cultuur
  *
