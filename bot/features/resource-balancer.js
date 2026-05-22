@@ -172,14 +172,38 @@ export async function runResourceBalancer(ctx) {
   // ── 4. Transfers uitvoeren ─────────────────────────────────────────────
 
   let transfersDone = 0;
-  const executedTransfers = []; // voor KPI-detail in dashboard
+  const executedTransfers = [];
 
+  // ── Pre-uitvoering: gegroepeerde samenvatting per donor ───────────────
+  const byDonor = new Map();
+  for (const plan of transferPlan.values()) {
+    if (plan.wood + plan.stone + plan.iron <= 0) continue;
+    const dName = state.get(plan.donorId)?.name ?? String(plan.donorId);
+    const rName = state.get(plan.receiverId)?.name ?? String(plan.receiverId);
+    if (!byDonor.has(plan.donorId)) byDonor.set(plan.donorId, { name: dName, sends: [] });
+    byDonor.get(plan.donorId).sends.push({ to: rName, toId: plan.receiverId, wood: plan.wood, stone: plan.stone, iron: plan.iron });
+  }
+
+  for (const [, donor] of byDonor) {
+    const sendLines = donor.sends.map(s => {
+      const res = [
+        s.wood  > 0 ? `🪵 ${s.wood.toLocaleString("nl-BE")}`  : "",
+        s.stone > 0 ? `🪨 ${s.stone.toLocaleString("nl-BE")}` : "",
+        s.iron  > 0 ? `🪙 ${s.iron.toLocaleString("nl-BE")}`  : "",
+      ].filter(Boolean).join(" ");
+      return `→ ${s.to} (${res})`;
+    }).join("  |  ");
+    console.log(`[resource-balancer] ${donor.name} stuurt: ${sendLines}`);
+  }
+  if (!byDonor.size) console.log("[resource-balancer] Geen transfers nodig");
+
+  // ── Uitvoering ────────────────────────────────────────────────────────
   for (const plan of transferPlan.values()) {
     const { donorId, receiverId, wood, stone, iron } = plan;
     if (wood + stone + iron <= 0) continue;
 
-    const donorRaw  = rawTowns.find(t => t.id === donorId);
-    const availCap  = num(donorRaw?.cap ?? state.get(donorId)?.cap);
+    const donorRaw = rawTowns.find(t => t.id === donorId);
+    const availCap = num(donorRaw?.cap ?? state.get(donorId)?.cap);
 
     const planned = [
       { res: "wood",  amount: wood  },
@@ -200,36 +224,29 @@ export async function runResourceBalancer(ctx) {
 
     const donorName    = state.get(donorId)?.name    ?? String(donorId);
     const receiverName = state.get(receiverId)?.name ?? String(receiverId);
-
-    // Reden bepalen (overflow vs prioriteit vs nivellering)
-    const isUrgent   = urgentIds.has(donorId);
-    const isPriority = priorityDefs.some(d => d.id === receiverId);
-    const reason     = isPriority ? "prioriteitsstad" : isUrgent ? "overflow-relief" : "nivellering";
-
-    // Audit-log: duidelijk wie → hoeveel per resource → naar wie + reden
-    const resStr = [
-      sends.wood  > 0 ? `🪵 ${sends.wood.toLocaleString("nl-BE")}`  : "",
-      sends.stone > 0 ? `🪨 ${sends.stone.toLocaleString("nl-BE")}` : "",
-      sends.iron  > 0 ? `🪙 ${sends.iron.toLocaleString("nl-BE")}`  : "",
-    ].filter(Boolean).join(" ");
-    console.log(`[resource-balancer] ${donorName} → ${receiverName} | ${resStr} | reden: ${reason}`);
+    const isUrgent     = urgentIds.has(donorId);
+    const isPriority   = priorityDefs.some(d => d.id === receiverId);
+    const reason       = isPriority ? "prioriteitsstad" : isUrgent ? "overflow-relief" : "nivellering";
 
     try {
-      await session.gamePost(
-        "town_overviews",
-        donorId,
-        "trade_between_own_town",
+      const tradeRes = await session.gamePost(
+        "town_overviews", donorId, "trade_between_own_town",
         { from: donorId, to: receiverId, wood: sends.wood, stone: sends.stone, iron: sends.iron, town_id: donorId }
       );
-      transfersDone++;
-      executedTransfers.push({
-        from: donorName, fromId: donorId,
-        to:   receiverName, toId: receiverId,
-        wood: sends.wood, stone: sends.stone, iron: sends.iron,
-        reason,
-      });
+      if (!tradeRes?.success) {
+        const errKey = tradeRes?.error?.key ?? tradeRes?.error ?? tradeRes?.message ?? JSON.stringify(tradeRes)?.slice(0, 100);
+        console.warn(`[resource-balancer] ✗ ${donorName} → ${receiverName}: ${errKey}`);
+      } else {
+        transfersDone++;
+        executedTransfers.push({
+          from: donorName, fromId: donorId,
+          to:   receiverName, toId: receiverId,
+          wood: sends.wood, stone: sends.stone, iron: sends.iron,
+          reason,
+        });
+      }
     } catch (err) {
-      console.warn(`[resource-balancer] Trade mislukt: ${err.message}`);
+      console.warn(`[resource-balancer] ✗ ${donorName} → ${receiverName}: ${err.message}`);
     }
 
     await randomSleep(2, 4);
