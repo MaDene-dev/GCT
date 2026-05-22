@@ -10,7 +10,8 @@ console.log("[culture] Module v4 geladen");
  *   onclick="return CultureOverview.startCelebration('party', 329);"
  */
 
-import { randomSleep } from "../lib/delay.js";
+import { randomSleep }    from "../lib/delay.js";
+import { runCultureTopup } from "./resource-balancer.js";
 
 const COSTS = {
   party:   { wood: 15_000, stone: 18_000, iron: 15_000 },
@@ -44,20 +45,66 @@ export async function runCulture(ctx) {
   const { running: runningByTown } = parseCultureInit_(allHtml);
   console.log(`[culture] Lopend per stad: ${Object.keys(runningByTown).join(", ") || "geen"}`);
 
-  let started = 0;
-  let skipped = 0;
   const now = Math.floor(Date.now() / 1000);
 
+  // ── Fase 1: detecteer resource-tekorten voor startbare vieringen ──────────
+  const topupTargets = []; // {townId, name, wood, stone, iron}
+
   for (const [townIdStr, types] of Object.entries(cultureCfg)) {
-    const townId     = parseInt(townIdStr, 10);
+    const townId      = parseInt(townIdStr, 10);
+    const townRunning = runningByTown[String(townId)] || {};
+    const townName    = String(townId);
+
+    for (const type of types) {
+      if (type === "games") continue;
+      if (townRunning[type]) continue; // loopt al
+      if (!canStart_(allHtml, type, townId)) continue; // niet startbaar
+
+      const cost = COSTS[type] ?? { wood: 0, stone: 0, iron: 0 };
+      if (cost.wood === 0 && cost.stone === 0 && cost.iron === 0) continue;
+
+      const res    = (townResources?.get(townId)) ?? {};
+      const needW  = Math.max(0, cost.wood  - (res.wood  ?? 0));
+      const needS  = Math.max(0, cost.stone - (res.stone ?? 0));
+      const needI  = Math.max(0, cost.iron  - (res.iron  ?? 0));
+
+      if (needW + needS + needI > 0) {
+        console.log(`[culture] ${townId} ${type}: grondstoffen te kort — 🪵${needW} 🪨${needS} 🪙${needI} nodig`);
+        // Voeg toe of combineer met bestaande entry voor deze stad
+        const existing = topupTargets.find(t => t.townId === townId);
+        if (existing) {
+          existing.wood  = Math.max(existing.wood,  needW);
+          existing.stone = Math.max(existing.stone, needS);
+          existing.iron  = Math.max(existing.iron,  needI);
+        } else {
+          topupTargets.push({ townId, name: townName, wood: needW, stone: needS, iron: needI });
+        }
+      }
+    }
+  }
+
+  // ── Fase 2: gerichte balancer-pass voor cultuursteden ────────────────────
+  let updatedResources = townResources;
+  if (topupTargets.length > 0) {
+    console.log(`[culture] Resource topup voor ${topupTargets.length} steden`);
+    const topupState = await runCultureTopup(ctx, topupTargets);
+    // Converteer topupState (Map) naar compatibel formaat voor resource-check
+    updatedResources = new Map([...(townResources || new Map()), ...topupState]);
+  }
+
+  // ── Fase 3: vieringen starten ─────────────────────────────────────────────
+  let started = 0;
+  let skipped = 0;
+
+  for (const [townIdStr, types] of Object.entries(cultureCfg)) {
+    const townId      = parseInt(townIdStr, 10);
     const townRunning = runningByTown[String(townId)] || {};
 
     console.log(`[culture] Stad ${townId}: types=${JSON.stringify(types)} | lopend=${JSON.stringify(Object.keys(townRunning))}`);
 
     for (const type of types) {
-      if (type === "games") continue; // games overslaan
+      if (type === "games") continue;
 
-      // Loopt er al een viering van dit type?
       const active = townRunning[type];
       if (active) {
         const ts   = active.timestamp || active.finished_at || 0;
@@ -66,20 +113,19 @@ export async function runCulture(ctx) {
         continue;
       }
 
-      // Button-check: is de viering startbaar voor deze stad?
       const canStart = canStart_(allHtml, type, townId);
       console.log(`[culture] ${townId} ${type}: canStart=${canStart}`);
       if (!canStart) { skipped++; continue; }
 
-      // Grondstoffen-check (alleen voor party/theater)
+      // Grondstoffen-check met bijgewerkte resources (na topup)
       const cost = COSTS[type] ?? { wood: 0, stone: 0, iron: 0 };
       if (cost.wood > 0 || cost.stone > 0 || cost.iron > 0) {
-        const res = townResources?.get(townId) ?? {};
+        const res     = updatedResources?.get(townId) ?? {};
         const woodOk  = (res.wood  ?? 0) >= cost.wood;
         const stoneOk = (res.stone ?? 0) >= cost.stone;
         const ironOk  = (res.iron  ?? 0) >= cost.iron;
         if (!woodOk || !stoneOk || !ironOk) {
-          console.log(`[culture] ${townId} ${type}: grondstoffen te kort (hout ${woodOk} steen ${stoneOk} zilver ${ironOk})`);
+          console.log(`[culture] ${townId} ${type}: nog te kort na topup — overslaan`);
           skipped++; continue;
         }
       }
