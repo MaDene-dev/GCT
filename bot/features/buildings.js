@@ -33,6 +33,16 @@ export async function runBuildings(ctx) {
   const queued = [];
   const townBuildings = {}; // townId → { name, buildings: { lumber: {current, target}, ... } }
 
+  // ── Hides: één call voor alle steden ──────────────────────────────────
+  const hidesData = await session.gameGet(
+    "town_overviews", session.activeTownId, "hides_overview",
+    { town_id: session.activeTownId, nl_init: true }
+  );
+  const hidesHtml  = hidesData?._plain_html ?? hidesData?._outer_html ?? hidesData?.html ?? "";
+  const hidesMap   = parseHides_(hidesHtml);
+  const hideTowns  = Object.keys(hidesMap).length;
+  console.log(`[buildings] Hides geladen voor ${hideTowns} steden`);
+
   for (const town of towns) {
     const data = await session.gameGet(
       "building_main",
@@ -95,7 +105,12 @@ export async function runBuildings(ctx) {
       }
     }
     if (Object.keys(townLevels).length > 0) {
-      townBuildings[town.id] = { name: town.name, levels: townLevels };
+      const hide = hidesMap[String(town.id)] || hidesMap[town.id] || null;
+      townBuildings[town.id] = {
+        name:   town.name,
+        levels: townLevels,
+        hide:   hide, // { iron_stored, max_storage } of null als geen grot
+      };
     }
 
     await randomSleep(0.5, 1);
@@ -110,6 +125,39 @@ export async function runBuildings(ctx) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+/**
+ * Parse hides_overview HTML → { townId: { iron_stored, max_storage }, ... }
+ * Patroon: sendMessage('initializeResourcesCounter', resources, { "329": { iron_stored: 14500, max_storage: 60000 }, ... })
+ */
+function parseHides_(html) {
+  if (!html) return {};
+  const marker = "initializeResourcesCounter";
+  const idx = html.indexOf(marker);
+  if (idx === -1) return {};
+
+  // Zoek het tweede argument (het hide-object) — het eerste is 'resources', tweede is hides
+  let pos = html.indexOf(",", idx);
+  if (pos === -1) return {};
+  pos = html.indexOf(",", pos + 1); // sla 'resources' argument over
+  if (pos === -1) return {};
+
+  const objStart = html.indexOf("{", pos);
+  if (objStart === -1) return {};
+
+  let depth = 0, objEnd = objStart;
+  for (let i = objStart; i < html.length; i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}") { depth--; if (depth === 0) { objEnd = i; break; } }
+  }
+
+  try {
+    return JSON.parse(html.slice(objStart, objEnd + 1));
+  } catch (e) {
+    console.warn("[buildings] Hides parse fout:", e.message);
+    return {};
+  }
+}
 
 /**
  * Parse "BuildingMain.buildings = { ... }" uit HTML.
