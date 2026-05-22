@@ -285,3 +285,164 @@ export async function runResourceBalancer(ctx) {
 }
 
 const num = (v) => (v !== null && v !== undefined ? Number(v) : 0);
+/**
+ * runCultureTopup — gerichte balancer-pass voor cultuurvieringen
+ *
+ * Vult specifieke ontvangers aan met exact de gevraagde hoeveelheid.
+ * Cultuursteden krijgen absolute prioriteit boven normale nivellering.
+ *
+ * @param {object} ctx - Feature context (session, config)
+ * @param {Array}  targets - [{townId, name, wood, stone, iron}] — benodigd tekort per stad
+ * @returns {Map} updatedResources - bijgewerkte town resources na de topup
+ */
+export async function runCultureTopup(ctx, targets) {
+  const { session, config } = ctx;
+  if (!targets || !targets.length) return new Map();
+
+  console.log(`[culture-topup] Aanvullen voor ${targets.length} vieringen: ${targets.map(t => t.name||t.townId).join(", ")}`);
+
+  // Herlaad trade_overview voor frisse staat (vorige balancer heeft al gehandeld)
+  const tradeData = await session.gameGet(
+    "town_overviews", session.activeTownId, "trade_overview",
+    { town_id: session.activeTownId, nl_init: true }
+  );
+  const rawTowns = tradeData?.towns
+    ? (Array.isArray(tradeData.towns) ? tradeData.towns : Object.values(tradeData.towns))
+    : [];
+
+  if (!rawTowns.length) { console.warn("[culture-topup] Geen steden in trade_overview"); return new Map(); }
+
+  const getRes     = (t, r) => t?.res?.[r] ?? t?.[r] ?? 0;
+  const getStorage = (t)    => t?.storage ?? t?.storage_volume ?? 1;
+  const num        = (v)    => (typeof v === "number" ? v : parseFloat(v) || 0);
+
+  // Bouw state Map
+  const state = new Map(rawTowns.map(t => [t.id, {
+    id:       t.id,
+    name:     t.name,
+    wood:     getRes(t, "wood"),
+    stone:    getRes(t, "stone"),
+    iron:     getRes(t, "iron"),
+    storage:  getStorage(t),
+    cap:      num(t.cap),
+  }]));
+
+  // ── Prioriteitssteden: controleer onvervulde tekorten ─────────────────────
+  // Als een prioriteitsstad na de hoofdbalancer nog tekort heeft (bv. door markt-level 5),
+  // reserveren we dat tekort bij de potentiële donors — cultuur krijgt de rest.
+  const priorityDefs  = config?.resourceBalancer?.priorityTowns ?? [];
+  const globalMinPct  = config?.resourceBalancer?.globalMinPct  ?? 0.30;
+  const RESOURCES     = ["wood", "stone", "iron"];
+
+  // Bereken per donor hoeveel hij nog verschuldigd is aan prioriteitssteden
+  const donorReserved = new Map(); // donorId → {wood, stone, iron}
+
+  for (const def of priorityDefs) {
+    const prioTown = state.get(def.id);
+    if (!prioTown) continue;
+    const minPct = def.minPct || {};
+
+    for (const res of RESOURCES) {
+      const target  = (minPct[res] ?? globalMinPct) * prioTown.storage;
+      const deficit = Math.max(0, target - prioTown[res]);
+      if (deficit <= 0) continue;
+
+      // Vind de meest geschikte donor (meeste surplus, heeft cap) en reserveer
+      const potentialDonors = [...state.values()]
+        .filter(d => d.id !== def.id && d.cap > 0 && d[res] > d.storage * globalMinPct)
+        .sort((a, b) => b[res] - a[res]);
+
+      let remaining = deficit;
+      for (const donor of potentialDonors) {
+        if (remaining <= 0) break;
+        const reserve = donorReserved.get(donor.id) || { wood: 0, stone: 0, iron: 0 };
+        const canReserve = Math.min(remaining, donor[res] - donor.storage * globalMinPct - (reserve[res] || 0));
+        if (canReserve > 0) {
+          reserve[res] = (reserve[res] || 0) + canReserve;
+          donorReserved.set(donor.id, reserve);
+          remaining -= canReserve;
+        }
+      }
+
+      if (remaining > 0) {
+        console.log(`[culture-topup] Prioriteitsstad ${def.id} heeft nog ${Math.round(remaining)} ${res} tekort — wordt gereserveerd`);
+      }
+    }
+  }
+
+  if (donorReserved.size > 0) {
+    console.log(`[culture-topup] Reserveringen voor prioriteitssteden bij ${donorReserved.size} donors`);
+  }
+
+  let transfersDone = 0;
+
+  for (const target of targets) {
+    const receiver = state.get(target.townId);
+    if (!receiver) { console.warn(`[culture-topup] Stad ${target.townId} niet gevonden`); continue; }
+
+    const needs = {
+      wood:  Math.max(0, (target.wood  || 0)),
+      stone: Math.max(0, (target.stone || 0)),
+      iron:  Math.max(0, (target.iron  || 0)),
+    };
+
+    if (needs.wood + needs.stone + needs.iron === 0) continue;
+
+    console.log(`[culture-topup] ${receiver.name} heeft nodig: 🪵${needs.wood} 🪨${needs.stone} 🪙${needs.iron}`);
+
+    // Vind donors per resource: steden met surplus, gesorteerd op meeste surplus
+    for (const res of RESOURCES) {
+      let remaining = needs[res];
+      if (remaining <= 0) continue;
+
+      const donors = [...state.values()]
+        .filter(d => d.id !== target.townId && d.cap > 0 && d[res] > d.storage * globalMinPct)
+        .sort((a, b) => b[res] - a[res]);
+
+      for (const donor of donors) {
+        if (remaining <= 0) break;
+
+        // Beschikbaar surplus = totaal surplus - reserveringen voor prioriteitssteden
+        const reserved = (donorReserved.get(donor.id) || {})[res] || 0;
+        const rawSurplus = donor[res] - donor.storage * globalMinPct - reserved;
+        const surplus = Math.floor(rawSurplus / 500) * 500;
+        if (surplus <= 0) continue;
+
+        const send = Math.min(surplus, remaining, donor.cap);
+        if (send < 500) continue;
+
+        const payload = { wood: 0, stone: 0, iron: 0 };
+        payload[res] = send;
+
+        try {
+          const tr = await session.gamePost(
+            "town_overviews", session.activeTownId, "trade_between_own_town",
+            { from: donor.id, to: target.townId, ...payload, town_id: donor.id,
+              no_bar: 1, nl_init: true }
+          );
+          if (tr?.success) {
+            const resIcon = res === "wood" ? "🪵" : res === "stone" ? "🪨" : "🪙";
+            console.log(`[culture-topup] ✓ ${donor.name} → ${receiver.name} ${resIcon}${send.toLocaleString("nl-BE")}`);
+            donor[res]  -= send;
+            donor.cap   -= send;
+            receiver[res] += send;
+            remaining   -= send;
+            transfersDone++;
+          } else {
+            const err = tr?.error?.key ?? tr?.error ?? tr?.message ?? "onbekend";
+            console.warn(`[culture-topup] ✗ ${donor.name} → ${receiver.name}: ${err}`);
+          }
+        } catch (e) {
+          console.warn(`[culture-topup] ✗ ${e.message}`);
+        }
+
+        await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
+      }
+    }
+  }
+
+  console.log(`[culture-topup] ✓ ${transfersDone} transfers uitgevoerd`);
+
+  // Retourneer bijgewerkte resources zodat culture er direct gebruik van kan maken
+  return state;
+}
