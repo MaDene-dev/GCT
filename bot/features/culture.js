@@ -92,6 +92,8 @@ export async function runCulture(ctx) {
   }
 
   // ── Fase 2: topup — gesorteerd op makkelijkste eerst (minste tekort) ─────
+  const allTopupTransfers = [];
+
   if (topupTargets.length > 0) {
     topupTargets.sort((a, b) => (a.wood + a.stone + a.iron) - (b.wood + b.stone + b.iron));
     console.log(`[culture] Topup voor ${topupTargets.length} steden (volgorde: minste tekort eerst)`);
@@ -99,10 +101,12 @@ export async function runCulture(ctx) {
     // Één voor één aanvullen
     for (const target of topupTargets) {
       console.log(`[culture] Topup ${target.name}: 🪵${target.wood} 🪨${target.stone} 🪙${target.iron} (${target.reason})`);
-      const resultState = await runCultureTopup(ctx, [target]);
+      const topupResult = await runCultureTopup(ctx, [target]);
+      const resultState = topupResult.state || topupResult;
+      allTopupTransfers.push(...(topupResult.transferList || []));
 
       // Update resourceStatus
-      const townState = resultState.get(target.townId);
+      const townState = resultState.get ? resultState.get(target.townId) : null;
       for (const type of (cultureCfg[String(target.townId)] || [])) {
         if (type === "games") continue;
         const cost = COSTS[type] ?? {};
@@ -196,12 +200,17 @@ export async function runCulture(ctx) {
   }
 
   console.log(`[culture] ✓ ${started} gestart | ${skipped} overgeslagen`);
+  if (allTopupTransfers.length > 0) {
+    console.log(`[culture] Topup samenvatting: ${allTopupTransfers.length} transfers voor cultuur`);
+  }
+
   return {
     summary: {
       started, skipped,
       towns_configured: cfgKeys.length,
-      resourceStatus,    // voor dashboard
-      topupCount: topupTargets.length,
+      resourceStatus,
+      topupCount:        topupTargets.length,
+      topupTransferList: allTopupTransfers, // voor KPI + audit log
     }
   };
 }
