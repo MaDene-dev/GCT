@@ -377,7 +377,7 @@ export async function runCultureTopup(ctx, targets) {
   let transfersDone = 0;
   const transferList = []; // voor audit log + KPI card
 
-  for (const target of targets) {
+  for (const target of filtered) {
     const receiver = state.get(target.townId);
     if (!receiver) { console.warn(`[culture-topup] Stad ${target.townId} niet gevonden`); continue; }
 
@@ -450,6 +450,12 @@ export async function runCultureTopup(ctx, targets) {
         await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
       }
     }
+  }
+
+  // Markeer steden met succesvolle transfers als "recent gestuurd" (cooldown)
+  for (const target of filtered) {
+    const sent = transferList.filter(t => t.toId === target.townId);
+    if (sent.length > 0) _topupSentAt.set(target.townId, Date.now());
   }
 
   console.log(`[culture-topup] ✓ ${transfersDone} transfers uitgevoerd`);
