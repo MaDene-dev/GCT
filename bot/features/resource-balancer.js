@@ -381,10 +381,12 @@ export async function runCultureTopup(ctx, targets) {
     const receiver = state.get(target.townId);
     if (!receiver) { console.warn(`[culture-topup] Stad ${target.townId} niet gevonden`); continue; }
 
+    // Afronden naar boven op veelvoud van 500 (minder verdacht)
+    const ceil500 = (v) => v <= 0 ? 0 : Math.ceil(v / 500) * 500;
     const needs = {
-      wood:  Math.max(0, (target.wood  || 0)),
-      stone: Math.max(0, (target.stone || 0)),
-      iron:  Math.max(0, (target.iron  || 0)),
+      wood:  ceil500(target.wood  || 0),
+      stone: ceil500(target.stone || 0),
+      iron:  ceil500(target.iron  || 0),
     };
 
     if (needs.wood + needs.stone + needs.iron === 0) continue;
