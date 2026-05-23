@@ -375,6 +375,7 @@ export async function runCultureTopup(ctx, targets) {
   }
 
   let transfersDone = 0;
+  const transferList = []; // voor audit log + KPI card
 
   for (const target of targets) {
     const receiver = state.get(target.townId);
@@ -428,6 +429,14 @@ export async function runCultureTopup(ctx, targets) {
             receiver[res] += send;
             remaining   -= send;
             transfersDone++;
+            transferList.push({
+              from: donor.name, fromId: donor.id,
+              to:   receiver.name, toId: target.townId,
+              wood:  res === "wood"  ? send : 0,
+              stone: res === "stone" ? send : 0,
+              iron:  res === "iron"  ? send : 0,
+              reason: "cultuur topup",
+            });
           } else {
             const err = tr?.error?.key ?? tr?.error ?? tr?.message ?? "onbekend";
             console.warn(`[culture-topup] ✗ ${donor.name} → ${receiver.name}: ${err}`);
@@ -443,6 +452,6 @@ export async function runCultureTopup(ctx, targets) {
 
   console.log(`[culture-topup] ✓ ${transfersDone} transfers uitgevoerd`);
 
-  // Retourneer bijgewerkte resources zodat culture er direct gebruik van kan maken
-  return state;
+  // Retourneer bijgewerkte state + transferList (voor KPI/audit in dashboard)
+  return { state, transferList };
 }
