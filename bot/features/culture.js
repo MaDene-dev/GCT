@@ -1,16 +1,13 @@
-console.log("[culture] Module v4 geladen");
+console.log("[culture] Module v5 geladen");
 /**
- * features/culture.js — Cultuur
+ * features/culture.js — Cultuur v5
  *
- * Bevestigde API-structuur:
- *   culture_overview → data.json.html (= data.html na _handleResponse)
- *   CultureOverview.init({"329":{"party":{"timestamp":...}}, ...}, {durations})
- *   class="confirm type_party  "  (twee spaties) = startbaar
- *   class="confirm type_party disabled " = loopt al / prereq niet voldaan
- *   onclick="return CultureOverview.startCelebration('party', 329);"
+ * Fase 1: pre-stock 60 min voor viering afloopt + meteen als viering kan starten
+ * Fase 2: topup per stad (makkelijkste eerst = meeste grondstoffen aanwezig)
+ * Fase 3: starten — één voor één
  */
 
-import { randomSleep }    from "../lib/delay.js";
+import { randomSleep } from "../lib/delay.js";
 import { runCultureTopup } from "./resource-balancer.js";
 
 const COSTS = {
@@ -20,7 +17,7 @@ const COSTS = {
   games:   { wood: 0,      stone: 0,      iron: 0      },
 };
 
-const HOUR = 3_600;
+const PRE_STOCK_MIN = 60;   // Minuten voor afloop: al aanvullen
 
 export async function runCulture(ctx) {
   const { session, config, townResources } = ctx;
@@ -40,64 +37,107 @@ export async function runCulture(ctx) {
     { town_id: session.activeTownId, nl_init: true }
   );
   const allHtml = allCultureData?.html ?? "";
-  console.log(`[culture] HTML: ${allHtml.length}b | init aanwezig: ${allHtml.includes("CultureOverview.init")}`);
+  console.log(`[culture] HTML: ${allHtml.length}b | init: ${allHtml.includes("CultureOverview.init")}`);
 
   const { running: runningByTown } = parseCultureInit_(allHtml);
-  console.log(`[culture] Lopend per stad: ${Object.keys(runningByTown).join(", ") || "geen"}`);
-
   const now = Math.floor(Date.now() / 1000);
 
-  // ── Fase 1: detecteer resource-tekorten voor startbare vieringen ──────────
-  const topupTargets = []; // {townId, name, wood, stone, iron}
+  // ── Fase 1: bepaal resource-behoeften ────────────────────────────────────
+  // a) Towns waar viering nu startbaar is + resources ontbreken
+  // b) Towns waar viering < PRE_STOCK_MIN afloopt → pre-stock alvast
+  const topupTargets = []; // {townId, name, wood, stone, iron, reason}
+  const resourceStatus = {}; // "townId_type" → status string
 
   for (const [townIdStr, types] of Object.entries(cultureCfg)) {
     const townId      = parseInt(townIdStr, 10);
     const townRunning = runningByTown[String(townId)] || {};
-    const townName    = String(townId);
 
     for (const type of types) {
       if (type === "games") continue;
-      if (townRunning[type]) continue; // loopt al
-      if (!canStart_(allHtml, type, townId)) continue; // niet startbaar
+      const cost = COSTS[type] ?? {};
+      if (!cost.wood && !cost.stone && !cost.iron) continue;
 
-      const cost = COSTS[type] ?? { wood: 0, stone: 0, iron: 0 };
-      if (cost.wood === 0 && cost.stone === 0 && cost.iron === 0) continue;
+      const running   = townRunning[type];
+      const res       = townResources?.get(townId) ?? {};
+      const resKey    = `${townId}_${type}`;
+      const needW     = Math.max(0, (cost.wood  || 0) - (res.wood  ?? 0));
+      const needS     = Math.max(0, (cost.stone || 0) - (res.stone ?? 0));
+      const needI     = Math.max(0, (cost.iron  || 0) - (res.iron  ?? 0));
+      const shortage  = needW + needS + needI;
+      const hasEnough = shortage === 0;
 
-      const res    = (townResources?.get(townId)) ?? {};
-      const needW  = Math.max(0, cost.wood  - (res.wood  ?? 0));
-      const needS  = Math.max(0, cost.stone - (res.stone ?? 0));
-      const needI  = Math.max(0, cost.iron  - (res.iron  ?? 0));
-
-      if (needW + needS + needI > 0) {
-        console.log(`[culture] ${townId} ${type}: grondstoffen te kort — 🪵${needW} 🪨${needS} 🪙${needI} nodig`);
-        // Voeg toe of combineer met bestaande entry voor deze stad
-        const existing = topupTargets.find(t => t.townId === townId);
-        if (existing) {
-          existing.wood  = Math.max(existing.wood,  needW);
-          existing.stone = Math.max(existing.stone, needS);
-          existing.iron  = Math.max(existing.iron,  needI);
+      if (running) {
+        const left = (running.timestamp || 0) - now;
+        if (left < PRE_STOCK_MIN * 60 && left > 0 && !hasEnough) {
+          console.log(`[culture] Pre-stock: ${townId} ${type} eindigt over ${Math.round(left/60)}min — aanvullen`);
+          addOrMergeTarget_(topupTargets, townId, String(townId), needW, needS, needI, "pre-stock");
+          resourceStatus[resKey] = "pre_stock";
+        } else if (hasEnough) {
+          resourceStatus[resKey] = "genoeg";
+        }
+      } else {
+        // Niet lopend — kan direct starten?
+        if (canStart_(allHtml, type, townId)) {
+          if (!hasEnough) {
+            addOrMergeTarget_(topupTargets, townId, String(townId), needW, needS, needI, "direct");
+            resourceStatus[resKey] = "topup_nodig";
+          } else {
+            resourceStatus[resKey] = "genoeg";
+          }
         } else {
-          topupTargets.push({ townId, name: townName, wood: needW, stone: needS, iron: needI });
+          resourceStatus[resKey] = "niet_beschikbaar";
         }
       }
     }
   }
 
-  // ── Fase 2: gerichte balancer-pass voor cultuursteden ────────────────────
-  let updatedResources = townResources;
+  // ── Fase 2: topup — gesorteerd op makkelijkste eerst (minste tekort) ─────
   if (topupTargets.length > 0) {
-    console.log(`[culture] Resource topup voor ${topupTargets.length} steden`);
-    const topupState = await runCultureTopup(ctx, topupTargets);
-    // Converteer topupState (Map) naar compatibel formaat voor resource-check
-    updatedResources = new Map([...(townResources || new Map()), ...topupState]);
+    topupTargets.sort((a, b) => (a.wood + a.stone + a.iron) - (b.wood + b.stone + b.iron));
+    console.log(`[culture] Topup voor ${topupTargets.length} steden (volgorde: minste tekort eerst)`);
+
+    // Één voor één aanvullen
+    for (const target of topupTargets) {
+      console.log(`[culture] Topup ${target.name}: 🪵${target.wood} 🪨${target.stone} 🪙${target.iron} (${target.reason})`);
+      const resultState = await runCultureTopup(ctx, [target]);
+
+      // Update resourceStatus
+      const townState = resultState.get(target.townId);
+      for (const type of (cultureCfg[String(target.townId)] || [])) {
+        if (type === "games") continue;
+        const cost = COSTS[type] ?? {};
+        if (!cost.wood && !cost.stone && !cost.iron) continue;
+        const resKey = `${target.townId}_${type}`;
+        const tw = townState?.wood ?? 0;
+        const ts = townState?.stone ?? 0;
+        const ti = townState?.iron ?? 0;
+        if (tw >= (cost.wood||0) && ts >= (cost.stone||0) && ti >= (cost.iron||0)) {
+          resourceStatus[resKey] = "onderweg";
+        } else {
+          resourceStatus[resKey] = "te_kort";
+        }
+      }
+
+      await randomSleep(1, 2);
+    }
   }
 
-  // ── Fase 3: vieringen starten ─────────────────────────────────────────────
+  // ── Fase 3: vieringen starten — één voor één ─────────────────────────────
   let started = 0;
   let skipped = 0;
 
-  for (const [townIdStr, types] of Object.entries(cultureCfg)) {
+  // Sorteer steden: eerst steden met meeste grondstoffen aanwezig (makkelijkste first)
+  const sortedTownIds = Object.keys(cultureCfg).sort((a, b) => {
+    const resA = townResources?.get(parseInt(a)) ?? {};
+    const resB = townResources?.get(parseInt(b)) ?? {};
+    const totA = (resA.wood||0) + (resA.stone||0) + (resA.iron||0);
+    const totB = (resB.wood||0) + (resB.stone||0) + (resB.iron||0);
+    return totB - totA; // descending
+  });
+
+  for (const townIdStr of sortedTownIds) {
     const townId      = parseInt(townIdStr, 10);
+    const types       = cultureCfg[townIdStr];
     const townRunning = runningByTown[String(townId)] || {};
 
     console.log(`[culture] Stad ${townId}: types=${JSON.stringify(types)} | lopend=${JSON.stringify(Object.keys(townRunning))}`);
@@ -107,8 +147,7 @@ export async function runCulture(ctx) {
 
       const active = townRunning[type];
       if (active) {
-        const ts   = active.timestamp || active.finished_at || 0;
-        const left = ts - now;
+        const left = (active.timestamp || 0) - now;
         console.log(`[culture] ${townId} ${type}: loopt nog (${Math.round(left / 60)}min)`);
         continue;
       }
@@ -117,36 +156,34 @@ export async function runCulture(ctx) {
       console.log(`[culture] ${townId} ${type}: canStart=${canStart}`);
       if (!canStart) { skipped++; continue; }
 
-      // Grondstoffen-check met bijgewerkte resources (na topup)
-      const cost = COSTS[type] ?? { wood: 0, stone: 0, iron: 0 };
+      const cost = COSTS[type] ?? {};
       if (cost.wood > 0 || cost.stone > 0 || cost.iron > 0) {
-        const res     = updatedResources?.get(townId) ?? {};
+        const res     = townResources?.get(townId) ?? {};
         const woodOk  = (res.wood  ?? 0) >= cost.wood;
         const stoneOk = (res.stone ?? 0) >= cost.stone;
         const ironOk  = (res.iron  ?? 0) >= cost.iron;
         if (!woodOk || !stoneOk || !ironOk) {
-          console.log(`[culture] ${townId} ${type}: nog te kort na topup — overslaan`);
+          const resKey = `${townId}_${type}`;
+          console.log(`[culture] ${townId} ${type}: nog te kort na topup`);
+          resourceStatus[resKey] = "te_kort";
           skipped++; continue;
         }
       }
 
-      // Start de viering
       console.log(`[culture] ${townId} ${type}: starten…`);
       try {
-        // celebration_type moet in de JSON body zitten, niet als URL param (bevestigd via F12)
         const result = await session.gamePost(
           "town_overviews", session.activeTownId, "start_celebration",
           { town_id: townId, celebration_type: type, no_bar: 1, nl_init: true }
         );
         if (result?.success) {
-          const finishAt = result.finished_at;
-          const timeStr  = finishAt
-            ? new Date(finishAt * 1000).toLocaleTimeString("nl-BE", { timeZone: "Europe/Brussels" })
-            : "";
-          console.log(`[culture] ✓ ${townId} ${type} gestart${timeStr ? " → eindigt " + timeStr : ""}`);
+          const fa = result.finished_at;
+          const end = fa ? new Date(fa*1000).toLocaleTimeString("nl-BE",{timeZone:"Europe/Brussels"}) : "";
+          console.log(`[culture] ✓ ${townId} ${type} gestart${end?" → eindigt "+end:""}`);
           started++;
+          resourceStatus[`${townId}_${type}`] = "gestart";
         } else {
-          const errKey = result?.error?.key ?? result?.error ?? result?.message ?? JSON.stringify(result)?.slice(0, 80);
+          const errKey = result?.error?.key ?? result?.error ?? result?.message ?? JSON.stringify(result)?.slice(0,80);
           console.warn(`[culture] ✗ ${townId} ${type}: ${errKey}`);
           skipped++;
         }
@@ -154,18 +191,23 @@ export async function runCulture(ctx) {
         console.warn(`[culture] ✗ ${townId} ${type}: ${err.message}`);
         skipped++;
       }
-
       await randomSleep(1, 2);
     }
   }
 
   console.log(`[culture] ✓ ${started} gestart | ${skipped} overgeslagen`);
-  return { summary: { started, skipped, towns_configured: cfgKeys.length } };
+  return {
+    summary: {
+      started, skipped,
+      towns_configured: cfgKeys.length,
+      resourceStatus,    // voor dashboard
+      topupCount: topupTargets.length,
+    }
+  };
 }
 
 /**
- * fetchCultureOverview — voor dashboard (fire-and-forget vanuit index.js)
- * Retourneert per stad: lopende vieringen + beschikbare/uitgeschakelde types
+ * fetchCultureOverview — voor dashboard + cultureel level
  */
 export async function fetchCultureOverview(session) {
   try {
@@ -177,29 +219,38 @@ export async function fetchCultureOverview(session) {
     if (!html) return {};
 
     const { running: runningByTown } = parseCultureInit_(html);
-    const result = {};
-    const now = Math.floor(Date.now() / 1000);
 
+    // Parse cultureel level + CP + gevechtspunten
+    const lvlMatch  = html.match(/place_culture_level[^>]*>[^:]*:\s*(\d+)/);
+    const cpMatch   = html.match(/place_culture_count[^>]*>[\s\S]*?(\d+)\/(\d+)/);
+    const gp1Match  = html.match(/points_count[^>]*>[\s\S]*?(\d[\d.,]*)\s*\/\s*(\d[\d.,]*)/);
+
+    const culturalLevel = lvlMatch  ? parseInt(lvlMatch[1], 10) : null;
+    const cpCurrent     = cpMatch   ? parseInt(cpMatch[1].replace(/\D/g,""), 10) : null;
+    const cpMax         = cpMatch   ? parseInt(cpMatch[2].replace(/\D/g,""), 10) : null;
+    const gpCurrent     = gp1Match  ? parseInt(gp1Match[1].replace(/[.,\s]/g,""), 10) : null;
+    const gpNeeded      = gp1Match  ? parseInt(gp1Match[2].replace(/[.,\s]/g,""), 10) : null;
+
+    const result = {};
     const TYPES = ["party", "theater", "triumph", "games"];
+
     TYPES.forEach(type => {
-      const pattern = "startCelebration('" + type + "',";
+      const pattern = `startCelebration('${type}',`;
       let idx = html.indexOf(pattern);
       while (idx !== -1) {
-        const townMatch = html.slice(idx, idx + 50).match(/startCelebration\('[\w]+',\s*(\d+)/);
-        if (townMatch) {
-          const tid = parseInt(townMatch[1], 10);
+        const tm = html.slice(idx, idx+50).match(/startCelebration\('[\w]+',\s*(\d+)/);
+        if (tm) {
+          const tid = parseInt(tm[1], 10);
           if (!result[tid]) result[tid] = { running: [], available: [], disabled: [] };
-          const snippet = html.slice(Math.max(0, idx - 200), idx);
-          const isDisabled = snippet.includes('class="confirm type_' + type + ' disabled') ||
-                             snippet.includes("class='confirm type_" + type + " disabled");
-          if (isDisabled) result[tid].disabled.push(type);
+          const snippet  = html.slice(Math.max(0, idx-200), idx);
+          const isDis    = snippet.includes(`class="confirm type_${type} disabled`);
+          if (isDis) result[tid].disabled.push(type);
           else result[tid].available.push(type);
         }
-        idx = html.indexOf(pattern, idx + 1);
+        idx = html.indexOf(pattern, idx+1);
       }
     });
 
-    // Voeg lopende vieringen toe
     for (const [tidStr, types] of Object.entries(runningByTown)) {
       const tid = parseInt(tidStr, 10);
       if (!result[tid]) result[tid] = { running: [], available: [], disabled: [] };
@@ -208,7 +259,7 @@ export async function fetchCultureOverview(session) {
       }
     }
 
-    return result;
+    return { towns: result, culturalLevel, cpCurrent, cpMax, gpCurrent, gpNeeded };
   } catch (e) {
     console.warn("[culture] fetchCultureOverview fout:", e.message);
     return {};
@@ -217,51 +268,43 @@ export async function fetchCultureOverview(session) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/**
- * Parse CultureOverview.init({"329":{"party":{"timestamp":...}}, ...}, {durations})
- * Retourneert running per stad als object.
- */
+function addOrMergeTarget_(targets, townId, name, wood, stone, iron, reason) {
+  const ex = targets.find(t => t.townId === townId);
+  if (ex) {
+    ex.wood  = Math.max(ex.wood,  wood);
+    ex.stone = Math.max(ex.stone, stone);
+    ex.iron  = Math.max(ex.iron,  iron);
+  } else {
+    targets.push({ townId, name, wood, stone, iron, reason });
+  }
+}
+
 function parseCultureInit_(html) {
   const idx = html.indexOf("CultureOverview.init(");
   if (idx === -1) return { running: {}, durations: {} };
-
   const firstBrace = html.indexOf("{", idx);
   if (firstBrace === -1) return { running: {}, durations: {} };
-
   const obj1 = extractBalanced_(html, firstBrace);
   let running = {};
   if (obj1) { try { running = JSON.parse(obj1.str); } catch {} }
-
   let durations = {};
   if (obj1) {
     const pos2 = html.indexOf("{", obj1.end + 1);
-    if (pos2 !== -1) {
-      const obj2 = extractBalanced_(html, pos2);
-      if (obj2) { try { durations = JSON.parse(obj2.str); } catch {} }
-    }
+    if (pos2 !== -1) { const obj2 = extractBalanced_(html, pos2); if (obj2) { try { durations = JSON.parse(obj2.str); } catch {} } }
   }
-
   return { running, durations };
 }
 
-/**
- * Check of een vieringstype startbaar is voor een specifieke stad.
- * Zoekt het onclick-patroon startCelebration('type', townId) en
- * controleert de klasse in de 250 chars vóór die positie.
- */
 function canStart_(html, type, townId) {
-  const searchStr = "startCelebration('" + type + "', " + townId + ")";
+  const searchStr = `startCelebration('${type}', ${townId})`;
   const idx = html.indexOf(searchStr);
   if (idx === -1) return false;
-
-  const snippet = html.slice(Math.max(0, idx - 250), idx);
-  const disabled = snippet.includes('class="confirm type_' + type + ' disabled') ||
-                   snippet.includes("class='confirm type_" + type + " disabled");
+  const snippet  = html.slice(Math.max(0, idx-250), idx);
+  const disabled = snippet.includes(`class="confirm type_${type} disabled`) ||
+                   snippet.includes(`class='confirm type_${type} disabled`);
   if (disabled) return false;
-
-  const hasBtn = snippet.includes('class="confirm type_' + type) ||
-                 snippet.includes("class='confirm type_" + type);
-  return hasBtn;
+  return snippet.includes(`class="confirm type_${type}`) ||
+         snippet.includes(`class='confirm type_${type}`);
 }
 
 function extractBalanced_(str, start) {
@@ -271,5 +314,5 @@ function extractBalanced_(str, start) {
     if (str[i] === "{") depth++;
     else if (str[i] === "}") { depth--; if (depth === 0) { end = i; break; } }
   }
-  return { str: str.slice(start, end + 1), end };
+  return { str: str.slice(start, end+1), end };
 }
