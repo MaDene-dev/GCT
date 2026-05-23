@@ -97,9 +97,10 @@ try {
 await sendEvent(gasCallbackUrl, runId, "run_started", { features });
 
 // Stuur cultuuroverzicht (voor dashboard-configuratie) — fire-and-forget
-fetchCultureOverview(session).then(overview => {
-  if (Object.keys(overview).length > 0) {
-    sendEvent(gasCallbackUrl, runId, "culture_overview", { overview });
+fetchCultureOverview(session).then(result => {
+  if (result && Object.keys(result).length > 0) {
+    // Stuur alle velden mee: towns, culturalLevel, cpCurrent, cpMax, gpCurrent, gpNeeded
+    sendEvent(gasCallbackUrl, runId, "culture_overview", result);
   }
 }).catch(() => { /* niet kritiek */ });
 
