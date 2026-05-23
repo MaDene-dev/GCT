@@ -84,6 +84,13 @@ export async function runCulture(ctx) {
           } else {
             resourceStatus[resKey] = "genoeg";
           }
+        } else if (shortage > 0) {
+          // canStart=false maar resources te kort → misschien IS het geblokkeerd door grondstoffen
+          // Pre-stock alvast; als het toch academie/cooldown is, is de transfer niet verspild
+          // (resources blijven in de stad voor volgende keer)
+          console.log(`[culture] ${townId} ${type}: canStart=false + tekort 🪵${needW} 🪨${needS} 🪙${needI} → pre-stock`);
+          addOrMergeTarget_(topupTargets, townId, String(townId), needW, needS, needI, "blocked pre-stock");
+          resourceStatus[resKey] = "pre_stock";
         } else {
           resourceStatus[resKey] = "niet_beschikbaar";
         }
