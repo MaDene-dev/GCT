@@ -247,6 +247,16 @@ export async function fetchCultureOverview(session) {
     const gpCurrent     = gp1Match  ? parseInt(gp1Match[1].replace(/[.,\s]/g,""), 10) : null;
     const gpNeeded      = gp1Match  ? parseInt(gp1Match[2].replace(/[.,\s]/g,""), 10) : null;
 
+    // Debug logging zodat we de HTML-structuur kunnen valideren
+    const snip = (keyword) => {
+      const i = html.indexOf(keyword);
+      if (i < 0) return "NOT FOUND";
+      return html.slice(i, i + 80).split("").filter(c => c >= " ").join("");
+    };
+    console.log("[culture-kpi] level match:", culturalLevel, "| HTML:", snip("place_culture_level"));
+    console.log("[culture-kpi] CP    match:", cpCurrent + "/" + cpMax, "| HTML:", snip("place_culture_count"));
+    console.log("[culture-kpi] GP    match:", gpCurrent + "/" + gpNeeded, "| HTML:", snip("points_count"));
+
     const result = {};
     const TYPES = ["party", "theater", "triumph", "games"];
 
