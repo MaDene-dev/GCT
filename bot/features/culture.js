@@ -70,7 +70,7 @@ export async function runCulture(ctx) {
         const left = (running.timestamp || 0) - now;
         if (left < PRE_STOCK_MIN * 60 && left > 0 && !hasEnough) {
           console.log(`[culture] Pre-stock: ${townId} ${type} eindigt over ${Math.round(left/60)}min — aanvullen`);
-          addOrMergeTarget_(topupTargets, townId, String(townId), needW, needS, needI, "pre-stock");
+          addOrMergeTarget_(topupTargets, townId, getName_(ctx, townId), needW, needS, needI, "pre-stock");
           resourceStatus[resKey] = "pre_stock";
         } else if (hasEnough) {
           resourceStatus[resKey] = "genoeg";
@@ -79,7 +79,7 @@ export async function runCulture(ctx) {
         // Niet lopend — kan direct starten?
         if (canStart_(allHtml, type, townId)) {
           if (!hasEnough) {
-            addOrMergeTarget_(topupTargets, townId, String(townId), needW, needS, needI, "direct");
+            addOrMergeTarget_(topupTargets, townId, getName_(ctx, townId), needW, needS, needI, "direct");
             resourceStatus[resKey] = "topup_nodig";
           } else {
             resourceStatus[resKey] = "genoeg";
@@ -89,7 +89,7 @@ export async function runCulture(ctx) {
           // Pre-stock alvast; als het toch academie/cooldown is, is de transfer niet verspild
           // (resources blijven in de stad voor volgende keer)
           console.log(`[culture] ${townId} ${type}: canStart=false + tekort 🪵${needW} 🪨${needS} 🪙${needI} → pre-stock`);
-          addOrMergeTarget_(topupTargets, townId, String(townId), needW, needS, needI, "blocked pre-stock");
+          addOrMergeTarget_(topupTargets, townId, getName_(ctx, townId), needW, needS, needI, "blocked pre-stock");
           resourceStatus[resKey] = "pre_stock";
         } else {
           resourceStatus[resKey] = "niet_beschikbaar";
@@ -151,7 +151,7 @@ export async function runCulture(ctx) {
     const types       = cultureCfg[townIdStr];
     const townRunning = runningByTown[String(townId)] || {};
 
-    console.log(`[culture] Stad ${townId}: types=${JSON.stringify(types)} | lopend=${JSON.stringify(Object.keys(townRunning))}`);
+    console.log(`[culture] ${getName_(ctx, townId)} (${townId}): types=${JSON.stringify(types)} | lopend=${JSON.stringify(Object.keys(townRunning))}`);
 
     for (const type of types) {
       if (type === "games") continue;
@@ -159,12 +159,12 @@ export async function runCulture(ctx) {
       const active = townRunning[type];
       if (active) {
         const left = (active.timestamp || 0) - now;
-        console.log(`[culture] ${townId} ${type}: loopt nog (${Math.round(left / 60)}min)`);
+        console.log(`[culture] ${getName_(ctx, townId)} ${type}: loopt nog (${Math.round(left / 60)}min)`);
         continue;
       }
 
       const canStart = canStart_(allHtml, type, townId);
-      console.log(`[culture] ${townId} ${type}: canStart=${canStart}`);
+      console.log(`[culture] ${getName_(ctx, townId)} ${type}: canStart=${canStart}`);
       if (!canStart) { skipped++; continue; }
 
       const cost = COSTS[type] ?? {};
@@ -175,13 +175,13 @@ export async function runCulture(ctx) {
         const ironOk  = (res.iron  ?? 0) >= cost.iron;
         if (!woodOk || !stoneOk || !ironOk) {
           const resKey = `${townId}_${type}`;
-          console.log(`[culture] ${townId} ${type}: nog te kort na topup`);
+          console.log(`[culture] ${getName_(ctx, townId)} ${type}: nog te kort na topup`);
           resourceStatus[resKey] = "te_kort";
           skipped++; continue;
         }
       }
 
-      console.log(`[culture] ${townId} ${type}: starten…`);
+      console.log(`[culture] ${getName_(ctx, townId)} ${type}: starten…`);
       try {
         const result = await session.gamePost(
           "town_overviews", session.activeTownId, "start_celebration",
@@ -293,6 +293,8 @@ export async function fetchCultureOverview(session) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+const getName_ = (ctx, townId) => ctx?.townNames?.[townId] || ctx?.townNames?.[String(townId)] || String(townId);
 
 function addOrMergeTarget_(targets, townId, name, wood, stone, iron, reason) {
   const ex = targets.find(t => t.townId === townId);
