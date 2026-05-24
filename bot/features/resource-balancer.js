@@ -297,9 +297,21 @@ const num = (v) => (v !== null && v !== undefined ? Number(v) : 0);
  */
 export async function runCultureTopup(ctx, targets) {
   const { session, config } = ctx;
-  if (!targets || !targets.length) return new Map();
+  if (!targets || !targets.length) return { state: new Map(), transferList: [] };
 
-  console.log(`[culture-topup] Aanvullen voor ${targets.length} vieringen: ${targets.map(t => t.name||t.townId).join(", ")}`);
+  // Cooldown: sla steden over waarvoor recent al verstuurd werd (goederen mogelijk nog onderweg)
+  const now = Date.now();
+  const filtered = targets.filter(t => {
+    const lastSent = _topupSentAt.get(t.townId);
+    if (lastSent && (now - lastSent) < TOPUP_COOLDOWN_MS) {
+      console.log(`[culture-topup] ${t.name || t.townId}: cooldown actief (${Math.round((now - lastSent) / 60000)}min geleden gestuurd)`);
+      return false;
+    }
+    return true;
+  });
+  if (!filtered.length) { console.log("[culture-topup] Alles in cooldown — overgeslagen"); return { state: new Map(), transferList: [] }; }
+
+  console.log(`[culture-topup] Aanvullen voor ${filtered.length} vieringen: ${filtered.map(t => t.name||t.townId).join(", ")}`);
 
   // Herlaad trade_overview voor frisse staat (vorige balancer heeft al gehandeld)
   const tradeData = await session.gameGet(
@@ -310,7 +322,7 @@ export async function runCultureTopup(ctx, targets) {
     ? (Array.isArray(tradeData.towns) ? tradeData.towns : Object.values(tradeData.towns))
     : [];
 
-  if (!rawTowns.length) { console.warn("[culture-topup] Geen steden in trade_overview"); return new Map(); }
+  if (!rawTowns.length) { console.warn("[culture-topup] Geen steden in trade_overview"); return { state: new Map(), transferList: [] }; }
 
   const getRes     = (t, r) => t?.res?.[r] ?? t?.[r] ?? 0;
   const getStorage = (t)    => t?.storage ?? t?.storage_volume ?? 1;
@@ -319,13 +331,37 @@ export async function runCultureTopup(ctx, targets) {
   // Bouw state Map
   const state = new Map(rawTowns.map(t => [t.id, {
     id:       t.id,
-    name:     t.name,
+    name:     t.name || ctx.townNames?.[t.id] || String(t.id),
     wood:     getRes(t, "wood"),
     stone:    getRes(t, "stone"),
     iron:     getRes(t, "iron"),
     storage:  getStorage(t),
     cap:      num(t.cap),
   }]));
+
+  // Parse inkomende transporten — zodat we niet dubbel sturen als goederen al onderweg zijn
+  const movements = tradeData?.movements ?? [];
+  const inTransit = {}; // townId → {wood, stone, iron}
+  for (const mov of movements) {
+    const toLink = mov.to?.link ?? "";
+    const match  = toLink.match(/href="#([A-Za-z0-9+/=]+)"/);
+    if (!match) continue;
+    try {
+      const d = JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
+      const destId = d.id;
+      if (!inTransit[destId]) inTransit[destId] = { wood: 0, stone: 0, iron: 0 };
+      inTransit[destId].wood  += mov.res?.wood  || 0;
+      inTransit[destId].stone += mov.res?.stone || 0;
+      inTransit[destId].iron  += mov.res?.iron  || 0;
+    } catch {}
+  }
+  if (Object.keys(inTransit).length > 0) {
+    for (const [tid, res] of Object.entries(inTransit)) {
+      const nm = state.get(Number(tid))?.name || ctx.townNames?.[tid] || tid;
+      const parts = [res.wood&&`🪵${res.wood.toLocaleString("nl-BE")}`,res.stone&&`🪨${res.stone.toLocaleString("nl-BE")}`,res.iron&&`🪙${res.iron.toLocaleString("nl-BE")}`].filter(Boolean);
+      if (parts.length) console.log(`[culture-topup] Onderweg naar ${nm}: ${parts.join(" ")}`);
+    }
+  }
 
   // ── Prioriteitssteden: controleer onvervulde tekorten ─────────────────────
   // Als een prioriteitsstad na de hoofdbalancer nog tekort heeft (bv. door markt-level 5),
@@ -383,11 +419,21 @@ export async function runCultureTopup(ctx, targets) {
 
     // Afronden naar boven op veelvoud van 500 (minder verdacht)
     const ceil500 = (v) => v <= 0 ? 0 : Math.ceil(v / 500) * 500;
+    // Trek onderweg zijnde grondstoffen af — geen dubbele zending
+    const transit = inTransit[target.townId] || { wood: 0, stone: 0, iron: 0 };
     const needs = {
-      wood:  ceil500(target.wood  || 0),
-      stone: ceil500(target.stone || 0),
-      iron:  ceil500(target.iron  || 0),
+      wood:  ceil500(Math.max(0, (target.wood  || 0) - transit.wood)),
+      stone: ceil500(Math.max(0, (target.stone || 0) - transit.stone)),
+      iron:  ceil500(Math.max(0, (target.iron  || 0) - transit.iron)),
     };
+    if (transit.wood + transit.stone + transit.iron > 0) {
+      const tName = state.get(target.townId)?.name || ctx.townNames?.[target.townId] || target.townId;
+      console.log(`[culture-topup] ${tName}: onderweg verrekend — na aftrek 🪵${needs.wood} 🪨${needs.stone} 🪙${needs.iron} nodig`);
+    }
+    if (needs.wood + needs.stone + needs.iron === 0) {
+      console.log(`[culture-topup] ${state.get(target.townId)?.name || target.townId}: voldoende onderweg — overslaan`);
+      continue;
+    }
 
     if (needs.wood + needs.stone + needs.iron === 0) continue;
 
@@ -425,7 +471,9 @@ export async function runCultureTopup(ctx, targets) {
           );
           if (tr?.success) {
             const resIcon = res === "wood" ? "🪵" : res === "stone" ? "🪨" : "🪙";
-            console.log(`[culture-topup] ✓ ${donor.name} → ${receiver.name} ${resIcon}${send.toLocaleString("nl-BE")}`);
+            const dName = donor.name || ctx.townNames?.[donor.id] || donor.id;
+            const rName = receiver.name || ctx.townNames?.[target.townId] || target.townId;
+            console.log(`[culture-topup] ✓ ${dName} → ${rName} ${resIcon}${send.toLocaleString("nl-BE")}`);
             donor[res]  -= send;
             donor.cap   -= send;
             receiver[res] += send;
