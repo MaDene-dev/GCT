@@ -295,6 +295,10 @@ const num = (v) => (v !== null && v !== undefined ? Number(v) : 0);
  * @param {Array}  targets - [{townId, name, wood, stone, iron}] — benodigd tekort per stad
  * @returns {Map} updatedResources - bijgewerkte town resources na de topup
  */
+// Module-level state voor topup cooldown (reset bij process-restart)
+const _topupSentAt     = new Map();
+const TOPUP_COOLDOWN_MS = 25 * 60 * 1000; // 25 min
+
 export async function runCultureTopup(ctx, targets) {
   const { session, config } = ctx;
   if (!targets || !targets.length) return { state: new Map(), transferList: [] };
