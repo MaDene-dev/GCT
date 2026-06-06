@@ -1,4 +1,12 @@
 /**
+ * index.js — Grepolis Control Tower Bot Entry Point
+ *
+ * Volgorde: farmAgent → resourceBalancer → culture → buildings → military
+ * Context (ctx) wordt doorgegeven aan alle features.
+ * Zie CLAUDE.md voor volledig overzicht.
+ */
+
+/**
  * index.js — Grepolis Control Tower Bot
  */
 
@@ -90,6 +98,11 @@ try {
     await sendEvent(gasCallbackUrl, runId, "login_success", {});
   }
 } catch (err) {
+  if (err.message === "CAPTCHA_DETECTED") {
+    console.warn("[auth] Captcha gedetecteerd — GCT stopt.");
+    await sendEvent(gasCallbackUrl, runId, "run_error", { error: "CAPTCHA_DETECTED" });
+    process.exit(0);
+  }
   await sendEvent(gasCallbackUrl, runId, "login_failed", { error: err.message });
   process.exit(1);
 }
@@ -123,6 +136,18 @@ let townResources = null;
 
 for (const name of FEATURE_ORDER) {
   if (!features.includes(name)) continue;
+
+  // ── Captcha check vóór elke feature ────────────────────────────────
+  try {
+    await session.checkCaptcha();
+  } catch (err) {
+    if (err.message === "CAPTCHA_DETECTED") {
+      console.warn(`[runner] Captcha gedetecteerd vóór ${name} — GCT stopt.`);
+      await sendEvent(gasCallbackUrl, runId, "run_error", { error: "CAPTCHA_DETECTED" });
+      process.exit(0);
+    }
+    throw err;
+  }
 
   const featureCtx = {
     ...ctx,
