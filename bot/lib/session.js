@@ -7,6 +7,7 @@
  *  - activeTownId (uit toid-cookie)
  *  - gameGet / gamePost met optionele extra URL-params
  *  - Sessie-expiry detectie
+ *  - Captcha detectie (gooit CAPTCHA_DETECTED error)
  */
 
 export function createSession(world, rawCookies) {
@@ -38,6 +39,7 @@ class Session {
   /**
    * Valideer sessie: haal game-pagina op, check grootte + cookies + CSRF.
    * Stelt ook activeTownId in vanuit de toid-cookie.
+   * Gooit CAPTCHA_DETECTED als hCaptcha aanwezig is in de pagina.
    */
   async validate() {
     // Gebruik farm_town_overviews als lichtgewicht sessiecheck
@@ -65,7 +67,12 @@ class Session {
       const pageUrl = `${this.baseUrl}/game/${this.world}`;
       const pageRes = await this._fetch(pageUrl, { method: "GET", headers: this._headers() });
       const pageHtml = await pageRes.text();
+
       if (pageHtml.length > 50000) {
+        // ── Captcha detectie ───────────────────────────────────────────
+        if (this._hasCaptcha(pageHtml)) {
+          throw new Error("CAPTCHA_DETECTED");
+        }
         this.csrf = this._extractCsrf(pageHtml);
       }
     }
@@ -86,25 +93,20 @@ class Session {
 
     console.log(`[session] ✓ csrf=${this.csrf.slice(0,8)}… toid=${this.activeTownId} cookies=${cookieCount}`);
     return true;
+  }
 
-    this.csrf = this._extractCsrf(html);
-    if (!this.csrf) {
-      console.warn("[session] CSRF niet gevonden in HTML");
-      return false;
+  /**
+   * Lichtgewicht captcha check — laadt game-pagina en gooit CAPTCHA_DETECTED
+   * als hCaptcha aanwezig is. Wordt aangeroepen vóór elke feature.
+   */
+  async checkCaptcha() {
+    const pageUrl  = `${this.baseUrl}/game/${this.world}`;
+    const pageRes  = await this._fetch(pageUrl, { method: "GET", headers: this._headers() });
+    const pageHtml = await pageRes.text();
+    if (this._hasCaptcha(pageHtml)) {
+      throw new Error("CAPTCHA_DETECTED");
     }
-
-    // toid kan ook als cookie meekomen in de validate-response
-    if (!this.activeTownId) {
-      this.activeTownId = this._extractToid();
-    }
-
-    if (!this.activeTownId) {
-      console.warn("[session] toid-cookie niet gevonden — activeTownId onbekend");
-      return false;
-    }
-
-    console.log(`[session] ✓ csrf=${this.csrf.slice(0,8)}… toid=${this.activeTownId} cookies=${cookieCount}`);
-    return true;
+    console.log("[session] Captcha check ✓");
   }
 
   /**
@@ -231,6 +233,14 @@ class Session {
       if (d?.json?.redirect?.includes("login")) return true;
     } catch { /* geen JSON */ }
     return false;
+  }
+
+  _hasCaptcha(html) {
+    return (
+      html.includes("js.hcaptcha.com") ||
+      html.includes("h-captcha")       ||
+      html.includes("hcaptcha")
+    );
   }
 
   _extractCsrf(html) {
