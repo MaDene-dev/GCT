@@ -40,6 +40,11 @@ function buildState(rawTowns, movements, townNames) {
     state.set(t.id, {
       id:        t.id,
       name:      t.name || townNames?.[t.id] || String(t.id),
+      // Werkelijke voorraad — gebruikt voor donor surplus check en API calls
+      wood:      getRes(t, "wood"),
+      stone:     getRes(t, "stone"),
+      iron:      getRes(t, "iron"),
+      // Effectieve voorraad (werkelijk + onderweg) — gebruikt voor needs en ruimtecheck
       eff_wood:  getRes(t, "wood")  + tr.wood,
       eff_stone: getRes(t, "stone") + tr.stone,
       eff_iron:  getRes(t, "iron")  + tr.iron,
@@ -106,8 +111,9 @@ function planTransfers(state, needs, donorMinPct) {
       let remaining = need[res] ?? 0;
       if (remaining <= 0) continue;
 
-      // Opslaglimiet respecteren op basis van werkelijke voorraad
-      const roomInStorage = receiver.storage - receiver[res];
+      // Opslaglimiet respecteren op basis van eff_res
+      // (consistent met hoe needs berekend zijn — beide op eff basis)
+      const roomInStorage = receiver.storage - receiver[`eff_${res}`];
       remaining = Math.min(remaining, roomInStorage);
       if (remaining <= 0) continue;
 
@@ -476,5 +482,4 @@ export async function runCultureTopup(ctx, targets) {
 
   console.log(`[culture-topup] ✓ ${done} transfers (${transferPlan.size} paren gepland)`);
   return { state, transferList: executed };
-                                       }
-        
+                                   }
