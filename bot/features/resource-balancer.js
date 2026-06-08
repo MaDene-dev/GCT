@@ -1,12 +1,12 @@
 /**
  * features/resource-balancer.js — Resource Balancer
  *
- * Volledige herwerking met globale pool-optimalisatie:
- *  - Alle behoeften en surplussen worden eerst globaal verzameld
- *  - Transfers worden gepland als gecombineerde calls per donor→ontvanger paar
- *  - Cap wordt als gedeelde pool behandeld over alle resources heen
- *  - Prioriteitssteden worden volledig gevuld vóór cultuur/nivellering
- *  - Reserveringen worden live bijgewerkt tijdens planning
+ * Pool-gebaseerde optimalisatie:
+ *  - Netto surplus/tekort per stad per resource
+ *  - Een stad is per resource óf donor óf ontvanger — nooit beide
+ *  - Cap is gedeelde pool over alle uitgaande transfers van een donor
+ *  - Ontvangers worden volledig gevuld voor de volgende aan de beurt komt (prioriteit)
+ *  - Transfers gecombineerd per donor→ontvanger paar in één API call
  */
 
 import { randomSleep, floorTo500, ceilTo500 } from "../lib/delay.js";
@@ -16,16 +16,14 @@ const num = (v) => (v !== null && v !== undefined ? Number(v) : 0);
 
 // ── Hulpfuncties ────────────────────────────────────────────────────────────
 
-function getRes(t, res)  { return num(t.res?.[res] ?? t[res]); }
-function getStorage(t)   { return num(t.storage ?? t.storage_volume) || 1; }
+function getRes(t, res) { return num(t.res?.[res] ?? t[res]); }
+function getStorage(t)  { return num(t.storage ?? t.storage_volume) || 1; }
 
 /**
- * Bouw een genormaliseerde state map vanuit rawTowns + movements.
- * Elke entry heeft: id, name, wood, stone, iron, storage, cap
+ * Bouw genormaliseerde state map vanuit rawTowns + movements.
  * eff_* = huidige voorraad + onderweg
  */
 function buildState(rawTowns, movements, townNames) {
-  // In-transit berekenen
   const inTransit = new Map(rawTowns.map(t => [t.id, { wood: 0, stone: 0, iron: 0 }]));
   for (const mov of movements) {
     const dest = inTransit.get(mov.destination_town_id);
@@ -42,32 +40,31 @@ function buildState(rawTowns, movements, townNames) {
     state.set(t.id, {
       id:        t.id,
       name:      t.name || townNames?.[t.id] || String(t.id),
-      wood:      getRes(t, "wood"),
-      stone:     getRes(t, "stone"),
-      iron:      getRes(t, "iron"),
       eff_wood:  getRes(t, "wood")  + tr.wood,
       eff_stone: getRes(t, "stone") + tr.stone,
       eff_iron:  getRes(t, "iron")  + tr.iron,
       storage:   getStorage(t),
-      cap:       num(t.cap),
+      cap:       num(t.cap),        // gedeelde pool voor alle uitgaande transfers
     });
   }
   return state;
 }
 
 /**
- * Globale pool-planner.
+ * Globale pool-planner met correcte donor/ontvanger scheiding.
  *
- * Gegeven een state map, een lijst van behoeften en een lijst van donors,
- * plant hij transfers zodat:
- *  - Behoeften zo volledig mogelijk worden gedekt
- *  - Cap als gedeelde pool per donor wordt behandeld
- *  - Transfers per donor→ontvanger paar worden gecombineerd
+ * Per resource:
+ *   - Donor    = eff_res > donorMinPct * storage  → heeft surplus
+ *   - Ontvanger = eff_res < targetPct * storage   → heeft tekort
+ *   - Een stad kan per resource donor of ontvanger zijn, maar nooit beide
  *
- * @param {Map}    state       - genormaliseerde state
- * @param {Array}  needs       - [{townId, wood, stone, iron, priority}]
- * @param {number} donorMinPct - minimum vullingsgraad die donors moeten behouden
- * @returns {Map}  transferPlan - Map van "donorId→receiverId" → {donorId, receiverId, wood, stone, iron}
+ * Cap = gedeelde pool over alle resources van een donor.
+ * Ontvangers worden op volgorde van prioriteit volledig gevuld.
+ *
+ * @param {Map}    state        - genormaliseerde state (wordt live bijgewerkt)
+ * @param {Array}  needs        - [{townId, wood, stone, iron, priority}]
+ * @param {number} donorMinPct  - minimum vullingsgraad donors moeten behouden
+ * @returns {Map}  transferPlan
  */
 function planTransfers(state, needs, donorMinPct) {
   const transferPlan = new Map();
@@ -81,7 +78,7 @@ function planTransfers(state, needs, donorMinPct) {
     transferPlan.get(key)[res] += amount;
   };
 
-  // Sorteer behoeften: prioriteit eerst, dan grootste tekort
+  // Sorteer behoeften: hoogste prioriteit eerst, dan grootste totaal tekort
   const sortedNeeds = [...needs].sort((a, b) => {
     if (a.priority !== b.priority) return b.priority - a.priority;
     return (b.wood + b.stone + b.iron) - (a.wood + a.stone + a.iron);
@@ -91,14 +88,26 @@ function planTransfers(state, needs, donorMinPct) {
     const receiver = state.get(need.townId);
     if (!receiver) continue;
 
+    // Vul ontvanger volledig op voor alle resources voor we naar volgende gaan
     for (const res of RESOURCES) {
       let remaining = need[res] ?? 0;
       if (remaining <= 0) continue;
 
-      // Donors: gesorteerd op meeste surplus, moeten cap > 0 hebben
+      // Opslaglimiet respecteren
+      const roomInStorage = receiver.storage - receiver[`eff_${res}`];
+      remaining = Math.min(remaining, roomInStorage);
+      if (remaining <= 0) continue;
+
+      // Donors voor deze resource: alleen steden met surplus
+      // Een ontvanger voor deze resource mag NIET als donor fungeren
       const donors = [...state.values()]
-        .filter(d => d.id !== need.townId && d.cap > 0)
+        .filter(d =>
+          d.id !== need.townId &&
+          d.cap > 0 &&
+          d[`eff_${res}`] > donorMinPct * d.storage  // heeft surplus
+        )
         .sort((a, b) => {
+          // Meeste surplus eerst
           const surpA = a[`eff_${res}`] - donorMinPct * a.storage;
           const surpB = b[`eff_${res}`] - donorMinPct * b.storage;
           return surpB - surpA;
@@ -107,9 +116,8 @@ function planTransfers(state, needs, donorMinPct) {
       for (const donor of donors) {
         if (remaining <= 0) break;
 
-        // Beschikbaar surplus voor deze resource
-        const surplus  = donor[`eff_${res}`] - donorMinPct * donor.storage;
-        const avail    = Math.min(floorTo500(surplus), donor.cap);
+        const surplus = donor[`eff_${res}`] - donorMinPct * donor.storage;
+        const avail   = Math.min(floorTo500(surplus), donor.cap);
         if (avail < 500) continue;
 
         const send = Math.min(avail, remaining);
@@ -119,8 +127,11 @@ function planTransfers(state, needs, donorMinPct) {
 
         // State live bijwerken
         donor[`eff_${res}`] -= send;
-        donor.cap            -= send;
-        receiver[`eff_${res}`] += send;
+        donor.cap            -= send;  // cap is gedeeld over alle resources
+        receiver[`eff_${res}`] = Math.min(
+          receiver[`eff_${res}`] + send,
+          receiver.storage
+        );
         remaining -= send;
       }
 
@@ -134,8 +145,7 @@ function planTransfers(state, needs, donorMinPct) {
 }
 
 /**
- * Voer een transferplan uit via de API.
- * Combineert wood+stone+iron per donor→ontvanger paar in één call.
+ * Voer transferplan uit — gecombineerde API call per donor→ontvanger paar.
  */
 async function executeTransferPlan(transferPlan, state, session, label) {
   let done = 0;
@@ -157,13 +167,18 @@ async function executeTransferPlan(transferPlan, state, session, label) {
     try {
       const tr = await session.gamePost(
         "town_overviews", donorId, "trade_between_own_town",
-        { from: donorId, to: receiverId, wood, stone, iron, town_id: donorId, no_bar: 1, nl_init: true }
+        { from: donorId, to: receiverId, wood, stone, iron,
+          town_id: donorId, no_bar: 1, nl_init: true }
       );
 
       if (tr?.success) {
         console.log(`[${label}] ✓ ${donorName} → ${receiverName}: ${resStr}`);
         done++;
-        executed.push({ from: donorName, fromId: donorId, to: receiverName, toId: receiverId, wood, stone, iron });
+        executed.push({
+          from: donorName, fromId: donorId,
+          to:   receiverName, toId: receiverId,
+          wood, stone, iron,
+        });
       } else {
         const errKey = tr?.error?.key ?? tr?.error ?? tr?.message ?? JSON.stringify(tr)?.slice(0, 100);
         console.warn(`[${label}] ✗ ${donorName} → ${receiverName}: ${errKey}`);
@@ -187,7 +202,7 @@ export async function runResourceBalancer(ctx) {
   const globalMinPct = cfg.globalMinPct         ?? 0.30;
   const priorityDefs = cfg.priorityTowns        ?? [];
 
-  // ── Trade overview ophalen ──────────────────────────────────────────────
+  // ── Trade overview ──────────────────────────────────────────────────────
   const tradeData = await session.gameGet(
     "town_overviews",
     session.activeTownId,
@@ -208,14 +223,13 @@ export async function runResourceBalancer(ctx) {
   const s0 = rawTowns[0];
   console.log(`[resource-balancer] Structuur check: cap=${s0?.cap} storage=${s0?.storage} res.wood=${s0?.res?.wood}`);
 
-  const state = buildState(rawTowns, movements, ctx.townNames);
+  const state     = buildState(rawTowns, movements, ctx.townNames);
   const urgentIds = new Set((urgentDonors ?? []).map(t => t.id));
 
   // ── Behoeften verzamelen ────────────────────────────────────────────────
-
   const needs = [];
 
-  // 1. forcedReceiver
+  // 1. forcedReceiver (hoogste prio)
   if (forcedReceiver) {
     const { townId, need } = forcedReceiver;
     if (state.has(townId)) {
@@ -234,7 +248,7 @@ export async function runResourceBalancer(ctx) {
     const town = state.get(def.id);
     if (!town) continue;
     const minPct = def.minPct ?? {};
-    const need = { townId: def.id, priority: 2, wood: 0, stone: 0, iron: 0 };
+    const need   = { townId: def.id, priority: 2, wood: 0, stone: 0, iron: 0 };
     for (const res of RESOURCES) {
       const target  = (minPct[res] ?? globalMinPct) * town.storage;
       const deficit = ceilTo500(target - town[`eff_${res}`]);
@@ -248,9 +262,7 @@ export async function runResourceBalancer(ctx) {
   const targetPct = hasUrgent ? overflowPct - 0.05 : globalMinPct;
 
   for (const town of state.values()) {
-    // Steden die zelf donor zijn (overflow) worden niet als ontvanger meegenomen
     if (urgentIds.has(town.id)) continue;
-
     const need = { townId: town.id, priority: 1, wood: 0, stone: 0, iron: 0 };
     for (const res of RESOURCES) {
       const fillPct = town[`eff_${res}`] / town.storage;
@@ -270,12 +282,12 @@ export async function runResourceBalancer(ctx) {
     return { summary: { transfers: 0, transferList: [], all_full: hasUrgent }, townResources };
   }
 
-  console.log(`[resource-balancer] ${needs.length} behoeften verzameld (prio3=${needs.filter(n=>n.priority===3).length} prio2=${needs.filter(n=>n.priority===2).length} prio1=${needs.filter(n=>n.priority===1).length})`);
+  console.log(`[resource-balancer] ${needs.length} behoeften (prio3=${needs.filter(n=>n.priority===3).length} prio2=${needs.filter(n=>n.priority===2).length} prio1=${needs.filter(n=>n.priority===1).length})`);
 
-  // ── Transferplan opstellen via globale pool ─────────────────────────────
+  // ── Transferplan ────────────────────────────────────────────────────────
   const transferPlan = planTransfers(state, needs, globalMinPct);
 
-  // Samenvatting voor logs
+  // Samenvatting
   if (transferPlan.size > 0) {
     for (const plan of transferPlan.values()) {
       const dName = state.get(plan.donorId)?.name    ?? String(plan.donorId);
@@ -294,7 +306,6 @@ export async function runResourceBalancer(ctx) {
   // ── Uitvoeren ───────────────────────────────────────────────────────────
   const { done, executed } = await executeTransferPlan(transferPlan, state, session, "resource-balancer");
 
-  // ── B9 alert ────────────────────────────────────────────────────────────
   if (done === 0 && hasUrgent) {
     console.warn(`[resource-balancer] ⚠ ${urgentDonors.length} overflow maar 0 transfers`);
   }
@@ -318,16 +329,9 @@ export async function runResourceBalancer(ctx) {
 
 // ── Culture Topup ────────────────────────────────────────────────────────────
 
-// Module-level cooldown state (reset bij process-restart)
 const _topupSentAt      = new Map();
 const TOPUP_COOLDOWN_MS = 25 * 60 * 1000;
 
-/**
- * runCultureTopup — aanvulling voor cultuurvieringen via pool-logica.
- *
- * Gebruikt dezelfde pool-planner als de hoofdbalancer.
- * Resources worden gecombineerd per donor→ontvanger paar.
- */
 export async function runCultureTopup(ctx, targets) {
   const { session, config } = ctx;
   if (!targets || !targets.length) return { state: new Map(), transferList: [] };
@@ -339,14 +343,14 @@ export async function runCultureTopup(ctx, targets) {
   const filtered = targets.filter(t => {
     const lastSent = _topupSentAt.get(t.townId);
     if (lastSent && (now - lastSent) < TOPUP_COOLDOWN_MS) {
-      console.log(`[culture-topup] ${t.name || t.townId}: cooldown actief (${Math.round((now - lastSent) / 60000)}min geleden)`);
+      console.log(`[culture-topup] ${t.name || t.townId}: cooldown (${Math.round((now - lastSent) / 60000)}min geleden)`);
       return false;
     }
     return true;
   });
 
   if (!filtered.length) {
-    console.log("[culture-topup] Alles in cooldown — overgeslagen");
+    console.log("[culture-topup] Alles in cooldown");
     return { state: new Map(), transferList: [] };
   }
 
@@ -386,7 +390,7 @@ export async function runCultureTopup(ctx, targets) {
     } catch {}
   }
 
-  // Log onderweg zijnde grondstoffen
+  // Log onderweg
   for (const [tid, res] of inTransit) {
     const nm    = state.get(Number(tid))?.name || ctx.townNames?.[tid] || tid;
     const parts = [
@@ -397,22 +401,33 @@ export async function runCultureTopup(ctx, targets) {
     if (parts.length) console.log(`[culture-topup] Onderweg naar ${nm}: ${parts.join(" ")}`);
   }
 
-  // Behoeften opstellen — trek onderweg af
+  // Behoeften — trek onderweg af en respecteer opslaglimiet
   const needs = [];
   for (const target of filtered) {
-    const transit = inTransit.get(target.townId) ?? { wood: 0, stone: 0, iron: 0 };
-    const need    = {
+    const transit  = inTransit.get(target.townId) ?? { wood: 0, stone: 0, iron: 0 };
+    const town     = state.get(target.townId);
+    const need     = {
       townId:   target.townId,
       priority: 1,
       wood:     ceilTo500(Math.max(0, (target.wood  || 0) - transit.wood)),
       stone:    ceilTo500(Math.max(0, (target.stone || 0) - transit.stone)),
       iron:     ceilTo500(Math.max(0, (target.iron  || 0) - transit.iron)),
     };
+
+    // Nooit meer plannen dan er ruimte is in opslag
+    if (town) {
+      for (const res of RESOURCES) {
+        const room = Math.max(0, town.storage - town[`eff_${res}`]);
+        need[res]  = Math.min(need[res], room);
+      }
+    }
+
     if (need.wood + need.stone + need.iron === 0) {
-      console.log(`[culture-topup] ${state.get(target.townId)?.name || target.townId}: voldoende onderweg`);
+      console.log(`[culture-topup] ${town?.name || target.townId}: voldoende onderweg`);
       continue;
     }
-    const tName = state.get(target.townId)?.name || target.townId;
+
+    const tName = town?.name || target.townId;
     console.log(`[culture-topup] ${tName} heeft nodig: 🪵${need.wood} 🪨${need.stone} 🪙${need.iron}`);
     needs.push(need);
   }
