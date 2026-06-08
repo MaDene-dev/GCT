@@ -236,11 +236,18 @@ class Session {
   }
 
   _hasCaptcha(html) {
-    return (
-      html.includes("js.hcaptcha.com") ||
-      html.includes("h-captcha")       ||
-      html.includes("hcaptcha")
-    );
+    const markers = [
+      'class="h-captcha"',
+      'data-hcaptcha-widget-id',
+      'hcaptcha.com/1/api.js',
+      'captchaLibraryCallback',
+    ];
+    const hits = markers.filter(m => html.includes(m)).length;
+    if (hits >= 2) {
+      console.warn(`[session] Captcha gedetecteerd (${hits}/${markers.length} markers)`);
+      return true;
+    }
+    return false;
   }
 
   _extractCsrf(html) {
