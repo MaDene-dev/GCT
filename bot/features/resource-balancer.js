@@ -69,6 +69,10 @@ function buildState(rawTowns, movements, townNames) {
 function planTransfers(state, needs, donorMinPct) {
   const transferPlan = new Map();
 
+  // Steden die in deze planningsronde grondstoffen ontvangen
+  // mogen niet als donor fungeren — ze hebben de grondstoffen nog niet fysiek
+  const receiverIds = new Set(needs.map(n => n.townId));
+
   const addPlan = (donorId, receiverId, res, amount) => {
     if (amount <= 0) return;
     const key = `${donorId}→${receiverId}`;
@@ -93,30 +97,33 @@ function planTransfers(state, needs, donorMinPct) {
       let remaining = need[res] ?? 0;
       if (remaining <= 0) continue;
 
-      // Opslaglimiet respecteren
-      const roomInStorage = receiver.storage - receiver[`eff_${res}`];
+      // Opslaglimiet respecteren op basis van werkelijke voorraad
+      const roomInStorage = receiver.storage - receiver[res];
       remaining = Math.min(remaining, roomInStorage);
       if (remaining <= 0) continue;
 
-      // Donors voor deze resource: alleen steden met surplus
-      // Een ontvanger voor deze resource mag NIET als donor fungeren
+      // Donors voor deze resource:
+      //  - Hebben werkelijk surplus (res, niet eff_res — API stuurt vanuit werkelijke voorraad)
+      //  - Zijn geen ontvangers in deze planningsronde (kettingpreventie)
+      //  - Hebben cap beschikbaar
       const donors = [...state.values()]
         .filter(d =>
           d.id !== need.townId &&
+          !receiverIds.has(d.id) &&          // geen ketens
           d.cap > 0 &&
-          d[`eff_${res}`] > donorMinPct * d.storage  // heeft surplus
+          d[res] > donorMinPct * d.storage   // werkelijk surplus
         )
         .sort((a, b) => {
-          // Meeste surplus eerst
-          const surpA = a[`eff_${res}`] - donorMinPct * a.storage;
-          const surpB = b[`eff_${res}`] - donorMinPct * b.storage;
+          // Meeste werkelijk surplus eerst
+          const surpA = a[res] - donorMinPct * a.storage;
+          const surpB = b[res] - donorMinPct * b.storage;
           return surpB - surpA;
         });
 
       for (const donor of donors) {
         if (remaining <= 0) break;
 
-        const surplus = donor[`eff_${res}`] - donorMinPct * donor.storage;
+        const surplus = donor[res] - donorMinPct * donor.storage;
         const avail   = Math.min(floorTo500(surplus), donor.cap);
         if (avail < 500) continue;
 
@@ -125,9 +132,12 @@ function planTransfers(state, needs, donorMinPct) {
 
         addPlan(donor.id, need.townId, res, send);
 
-        // State live bijwerken
-        donor[`eff_${res}`] -= send;
+        // State live bijwerken — zowel werkelijke als eff voorraad
+        donor[res]           -= send;
+        donor[`eff_${res}`]  -= send;
         donor.cap            -= send;  // cap is gedeeld over alle resources
+        // Ontvanger: werkelijke voorraad nog niet bijwerken (grondstoffen nog onderweg)
+        // eff_res wel bijwerken zodat volgende planningsstappen correct zijn
         receiver[`eff_${res}`] = Math.min(
           receiver[`eff_${res}`] + send,
           receiver.storage
@@ -457,5 +467,5 @@ export async function runCultureTopup(ctx, targets) {
 
   console.log(`[culture-topup] ✓ ${done} transfers (${transferPlan.size} paren gepland)`);
   return { state, transferList: executed };
-                                                                          }
-      
+  }
+                               
