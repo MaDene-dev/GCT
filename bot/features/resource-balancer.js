@@ -69,9 +69,18 @@ function buildState(rawTowns, movements, townNames) {
 function planTransfers(state, needs, donorMinPct) {
   const transferPlan = new Map();
 
-  // Steden die in deze planningsronde grondstoffen ontvangen
-  // mogen niet als donor fungeren — ze hebben de grondstoffen nog niet fysiek
-  const receiverIds = new Set(needs.map(n => n.townId));
+  // Kettingpreventie per resource:
+  // Een stad mag niet als donor fungeren voor een resource waarvoor hij
+  // in deze planningsronde grondstoffen ontvangt.
+  // Map: townId → Set van resources waarvoor hij ontvanger is
+  const receiverResources = new Map();
+  for (const need of needs) {
+    const resSet = new Set();
+    for (const res of RESOURCES) {
+      if ((need[res] ?? 0) > 0) resSet.add(res);
+    }
+    if (resSet.size > 0) receiverResources.set(need.townId, resSet);
+  }
 
   const addPlan = (donorId, receiverId, res, amount) => {
     if (amount <= 0) return;
@@ -103,15 +112,15 @@ function planTransfers(state, needs, donorMinPct) {
       if (remaining <= 0) continue;
 
       // Donors voor deze resource:
-      //  - Hebben werkelijk surplus (res, niet eff_res — API stuurt vanuit werkelijke voorraad)
-      //  - Zijn geen ontvangers in deze planningsronde (kettingpreventie)
+      //  - Hebben werkelijk surplus (res, niet eff_res)
+      //  - Zijn geen ontvanger voor DEZE resource (kettingpreventie per resource)
       //  - Hebben cap beschikbaar
       const donors = [...state.values()]
         .filter(d =>
           d.id !== need.townId &&
-          !receiverIds.has(d.id) &&          // geen ketens
+          !(receiverResources.get(d.id)?.has(res)) &&  // geen keten voor deze resource
           d.cap > 0 &&
-          d[res] > donorMinPct * d.storage   // werkelijk surplus
+          d[res] > donorMinPct * d.storage              // werkelijk surplus
         )
         .sort((a, b) => {
           // Meeste werkelijk surplus eerst
@@ -467,5 +476,5 @@ export async function runCultureTopup(ctx, targets) {
 
   console.log(`[culture-topup] ✓ ${done} transfers (${transferPlan.size} paren gepland)`);
   return { state, transferList: executed };
-  }
-                               
+                                       }
+        
