@@ -221,7 +221,7 @@ async function executeTransferPlan(transferPlan, state, session, label) {
 // ── Hoofdfunctie ────────────────────────────────────────────────────────────
 
 export async function runResourceBalancer(ctx) {
-  const { session, config, urgentDonors = [], forcedReceiver = null } = ctx;
+  const { session, config, urgentDonors = [], forcedReceiver = null, culturalNeeds = [] } = ctx;
   const cfg          = config.resourceBalancer ?? {};
   const overflowPct  = cfg.overflowThresholdPct ?? 0.90;
   const globalMinPct = cfg.globalMinPct         ?? 0.30;
@@ -287,20 +287,44 @@ export async function runResourceBalancer(ctx) {
     if (need.wood + need.stone + need.iron > 0) needs.push(need);
   }
 
-  // 3. Nivellering
+  // 3. Cultuurbehoeften (prio 1) — aangeleverd vanuit culture.js
+  for (const cn of culturalNeeds) {
+    if (!state.has(cn.townId)) continue;
+    const town = state.get(cn.townId);
+    const need = { townId: cn.townId, priority: 1, wood: 0, stone: 0, iron: 0 };
+    for (const res of RESOURCES) {
+      const deficit = ceilTo500((cn[res] || 0) - town[`eff_${res}`]);
+      if (deficit > 0) need[res] = deficit;
+    }
+    if (need.wood + need.stone + need.iron > 0) {
+      // Vervang bestaand prio2 need als dat lagere prio heeft
+      const existing = needs.find(n => n.townId === cn.townId);
+      if (existing) {
+        for (const res of RESOURCES) existing[res] = Math.max(existing[res], need[res]);
+      } else {
+        needs.push(need);
+      }
+    }
+  }
+
+  // 4. Nivellering (prio 0)
   const hasUrgent = urgentDonors && urgentDonors.length > 0;
   const targetPct = hasUrgent ? overflowPct - 0.05 : globalMinPct;
 
   for (const town of state.values()) {
     if (urgentIds.has(town.id)) continue;
-    const need = { townId: town.id, priority: 1, wood: 0, stone: 0, iron: 0 };
+    const need = { townId: town.id, priority: 0, wood: 0, stone: 0, iron: 0 };
     for (const res of RESOURCES) {
       const fillPct = town[`eff_${res}`] / town.storage;
       if (fillPct < targetPct) {
         need[res] = ceilTo500((targetPct - fillPct) * town.storage);
       }
     }
-    if (need.wood + need.stone + need.iron > 0) needs.push(need);
+    if (need.wood + need.stone + need.iron > 0) {
+      // Niet toevoegen als stad al een hogere prio need heeft
+      const existing = needs.find(n => n.townId === town.id);
+      if (!existing) needs.push(need);
+    }
   }
 
   if (needs.length === 0) {
@@ -482,4 +506,4 @@ export async function runCultureTopup(ctx, targets) {
 
   console.log(`[culture-topup] ✓ ${done} transfers (${transferPlan.size} paren gepland)`);
   return { state, transferList: executed };
-                                   }
+}
