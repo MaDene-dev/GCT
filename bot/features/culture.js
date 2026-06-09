@@ -20,7 +20,7 @@ const COSTS = {
 const PRE_STOCK_MIN = 60;   // Minuten voor afloop: al aanvullen
 
 export async function runCulture(ctx) {
-  const { session, config, townResources } = ctx;
+  const { session, config, townResources, cultureHtml: preloadedHtml } = ctx;
 
   const cultureCfg = config?.culture?.towns ?? {};
   const cfgKeys    = Object.keys(cultureCfg);
@@ -31,12 +31,15 @@ export async function runCulture(ctx) {
     return { summary: { started: 0, skipped: 0 } };
   }
 
-  // Eén API-call voor alle steden
-  const allCultureData = await session.gameGet(
-    "town_overviews", session.activeTownId, "culture_overview",
-    { town_id: session.activeTownId, nl_init: true }
-  );
-  const allHtml = allCultureData?.html ?? "";
+  // Hergebruik vooraf geladen HTML indien beschikbaar — vermijdt dubbele API call
+  let allHtml = preloadedHtml ?? null;
+  if (!allHtml) {
+    const allCultureData = await session.gameGet(
+      "town_overviews", session.activeTownId, "culture_overview",
+      { town_id: session.activeTownId, nl_init: true }
+    );
+    allHtml = allCultureData?.html ?? "";
+  }
   console.log(`[culture] HTML: ${allHtml.length}b | init: ${allHtml.includes("CultureOverview.init")}`);
 
   const { running: runningByTown } = parseCultureInit_(allHtml);
@@ -306,6 +309,60 @@ function addOrMergeTarget_(targets, townId, name, wood, stone, iron, reason) {
   }
 }
 
+/**
+ * calcCultureNeeds — berekent grondstoffentekorten voor vieringen
+ * zonder iets te starten. Wordt gebruikt door resourceBalancer als prio 1.
+ *
+ * @returns {Array} [{townId, wood, stone, iron, priority: 1}]
+ */
+export function calcCultureNeeds(html, cultureCfg, townResources) {
+  if (!html || !cultureCfg) return [];
+
+  const { running: runningByTown } = parseCultureInit_(html);
+  const now    = Math.floor(Date.now() / 1000);
+  const needs  = [];
+
+  for (const [townIdStr, types] of Object.entries(cultureCfg)) {
+    const townId      = parseInt(townIdStr, 10);
+    const townRunning = runningByTown[String(townId)] || {};
+    const res         = townResources?.get(townId) ?? {};
+
+    for (const type of types) {
+      if (type === "games" || type === "triumph") continue;
+      const cost = COSTS[type] ?? {};
+      if (!cost.wood && !cost.stone && !cost.iron) continue;
+
+      // Sla over als er al een viering van dit type loopt
+      // én nog meer dan PRE_STOCK_MIN minuten te gaan
+      const running = townRunning[type];
+      if (running) {
+        const left = (running.timestamp || 0) - now;
+        if (left > PRE_STOCK_MIN * 60) continue;
+        // Bijna afgelopen → pre-stock nodig
+      }
+
+      // Bereken tekort
+      const needW = Math.max(0, (cost.wood  || 0) - (res.wood  ?? 0));
+      const needS = Math.max(0, (cost.stone || 0) - (res.stone ?? 0));
+      const needI = Math.max(0, (cost.iron  || 0) - (res.iron  ?? 0));
+
+      if (needW + needS + needI === 0) continue;
+
+      // Merge met bestaand need voor dezelfde stad
+      const existing = needs.find(n => n.townId === townId);
+      if (existing) {
+        existing.wood  = Math.max(existing.wood,  needW);
+        existing.stone = Math.max(existing.stone, needS);
+        existing.iron  = Math.max(existing.iron,  needI);
+      } else {
+        needs.push({ townId, wood: needW, stone: needS, iron: needI, priority: 1 });
+      }
+    }
+  }
+
+  return needs;
+}
+
 function parseCultureInit_(html) {
   const idx = html.indexOf("CultureOverview.init(");
   if (idx === -1) return { running: {}, durations: {} };
@@ -342,5 +399,4 @@ function extractBalanced_(str, start) {
     else if (str[i] === "}") { depth--; if (depth === 0) { end = i; break; } }
   }
   return { str: str.slice(start, end+1), end };
-    }
-        
+}
