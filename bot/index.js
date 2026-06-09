@@ -19,7 +19,7 @@ import { sleep }              from "./lib/delay.js";
 
 import { runFarmAgent }          from "./features/farm-agent.js";
 import { runResourceBalancer }   from "./features/resource-balancer.js";
-import { runCulture, fetchCultureOverview } from "./features/culture.js";
+import { runCulture, fetchCultureOverview, calcCultureNeeds } from "./features/culture.js";
 import { runBuildings }          from "./features/buildings.js";
 import { runMilitary }           from "./features/military.js";
 
@@ -117,6 +117,29 @@ fetchCultureOverview(session).then(result => {
   }
 }).catch(() => { /* niet kritiek */ });
 
+// Bereken cultuurbehoeften vooraf — wordt meegegeven aan resourceBalancer als prio 1
+let cultureHtml    = null;
+let culturalNeeds  = [];
+if (features.includes("resourceBalancer") && features.includes("culture")) {
+  try {
+    const { gameGet } = session;
+    const cultureData = await session.gameGet(
+      "town_overviews", session.activeTownId, "culture_overview",
+      { town_id: session.activeTownId, nl_init: true }
+    );
+    cultureHtml = cultureData?.html ?? null;
+    if (cultureHtml) {
+      const cultureCfg = config?.culture?.towns ?? {};
+      culturalNeeds = calcCultureNeeds(cultureHtml, cultureCfg, null);
+      if (culturalNeeds.length > 0) {
+        console.log(`[runner] Cultuurbehoeften: ${culturalNeeds.length} steden meegegeven aan resourceBalancer`);
+      }
+    }
+  } catch (e) {
+    console.warn("[runner] Cultuurbehoeften berekening mislukt:", e.message);
+  }
+}
+
 // ── 6. Feature runner ─────────────────────────────────────────────────────
 
 const FEATURE_ORDER = ["farmAgent", "resourceBalancer", "culture", "buildings", "military"];
@@ -151,8 +174,8 @@ for (const name of FEATURE_ORDER) {
 
   const featureCtx = {
     ...ctx,
-    ...(name === "resourceBalancer" ? { urgentDonors: overflowTowns } : {}),
-    ...(name === "culture"          ? { townResources }                : {}),
+    ...(name === "resourceBalancer" ? { urgentDonors: overflowTowns, culturalNeeds } : {}),
+    ...(name === "culture"          ? { townResources, cultureHtml }                 : {}),
   };
 
   try {
