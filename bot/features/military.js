@@ -24,11 +24,19 @@ export async function runMilitary(ctx) {
   const undefended = [];
   const overview   = [];
 
+  let _unitDebugLogged    = false;
+  let _orderDebugLogged   = false;
+
   for (const town of towns) {
     const units    = town.units ?? [];
     const unitMap  = {};
 
     for (const u of units) {
+      // Debug: log velden van eerste unit om tijdsvelden te ontdekken
+      if (!_unitDebugLogged) {
+        console.log(`[military] Unit velden:`, JSON.stringify(u));
+        _unitDebugLogged = true;
+      }
       unitMap[u.id] = {
         home:       u.count ?? 0,
         away:       Math.max(0, (u.total ?? 0) - (u.count ?? 0)),
@@ -38,6 +46,11 @@ export async function runMilitary(ctx) {
 
     // Productie uit orders
     for (const order of [...(town.orders?.barracks ?? []), ...(town.orders?.docks ?? [])]) {
+      // Debug: log velden van eerste order om tijdsvelden te ontdekken
+      if (!_orderDebugLogged) {
+        console.log(`[military] Order velden:`, JSON.stringify(order));
+        _orderDebugLogged = true;
+      }
       if (!unitMap[order.unit_type]) {
         unitMap[order.unit_type] = { home: 0, away: 0, production: 0 };
       }
@@ -65,3 +78,4 @@ export async function runMilitary(ctx) {
   console.log(`[military] ${towns.length} dorpen gecheckt, ${undefended.length} onverdedigd`);
   return { summary: { towns: towns.length, undefended, overview } };
 }
+
