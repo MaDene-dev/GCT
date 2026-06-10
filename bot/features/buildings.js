@@ -1,4 +1,17 @@
 /**
+ * buildings.js — Gebouwenwachtrij + grotinhoud
+ *
+ * HTML-paden (KRITIEK):
+ *   Gebouwen: result.html (= data.json.html na session unwrap)
+ *   Grotinhoud: result._plain_html (= data.plain.html)
+ *
+ * Gebouwen: BuildingMain.buildings = { academy: { current_level, level }, ... }
+ * Speciale gebouwen: $.extend(BuildingMain.special_buildings_combined_group, {...}, {...})
+ * Grot: sendMessage('initializeResourcesCounter', {resources}, {hides})
+ *       → neem het TWEEDE argument voor grotinhoud
+ */
+
+/**
  * features/buildings.js — Gebouwen monitoring
  *
  * building_main?action=index HTML bevat:
@@ -31,6 +44,7 @@ export async function runBuildings(ctx) {
   }
 
   const queued = [];
+  let _buildingDebugLogged = false;
   const townBuildings = {}; // townId → { name, buildings: { lumber: {current, target}, ... } }
 
   // ── Hides: één call voor alle steden ──────────────────────────────────
@@ -95,6 +109,11 @@ export async function runBuildings(ctx) {
       const targetLevel  = info?.level ?? currentLevel;
       townLevels[building] = { current: currentLevel, target: targetLevel };
       if (targetLevel > currentLevel) {
+        // Debug: log velden van eerste wachtrij-item om tijdsvelden te ontdekken
+        if (!_buildingDebugLogged) {
+          console.log(`[buildings] Queue item velden (${building}):`, JSON.stringify(info));
+          _buildingDebugLogged = true;
+        }
         queued.push({
           town_id:  town.id,
           name:     town.name,
@@ -237,3 +256,4 @@ function parseSpecialBuildings_(html) {
 
   return result;
 }
+  
